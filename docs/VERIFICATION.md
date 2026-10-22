@@ -8,6 +8,8 @@ This file records actual results, not intended coverage.
 - Rust 1.99.1 and Cargo 1.99.1 available.
 - Cargo.lock resolved successfully without compiling.
 - Tiny SQLite FTS5 contract check passed for nine hostile/punctuation/Unicode queries using the same escaping algorithm as Rust storage.
+- `python3 scripts/storage_sql_smoke.py` passed against the actual embedded schema: deduplication, FTS insert/delete triggers, vector cascade, non-reused IDs, and retry SQL.
+- `cargo fmt --check`, `cargo metadata --locked --no-deps`, `git diff --check`, and Python syntax compilation passed. These do not replace a Rust compilation or test run.
 - No full suite or release build run on the laptop.
 
 ## CI

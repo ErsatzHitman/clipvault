@@ -82,7 +82,7 @@ impl Engine {
                 match rx.recv_timeout(Duration::from_millis(200)) {
                     Ok(command)=> {
                         let result:Result<()>= (|| { match command {
-                            Command::Capture(capture,source)=> { let c=cfg.read().unwrap().clone(); if !c.paused && !c.excludes(Some(&source)) { store.insert(capture,&source,&c)?; changed=true; } }
+                            Command::Capture(capture,source)=> { let c=cfg.read().unwrap().clone(); if !c.paused && !c.excludes(if source=="Unknown app" {None}else{Some(&source)}) { store.insert(capture,&source,&c)?; changed=true; } }
                             Command::Delete(id)=> {store.delete(id)?;changed=true;}
                             Command::Pin(id,pin)=> {store.pin(id,pin)?;changed=true;}
                             Command::Clear=> {store.clear()?;changed=true;}

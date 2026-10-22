@@ -49,6 +49,8 @@ Settings include history count, age, total payload size, per-item size, polling 
 | Linux X11 | Text, images, regular files | X11 global shortcut; Ctrl+V | A running X server/window manager is required. Clipboard ownership requires the app to remain running. `_NET_ACTIVE_WINDOW` and `_NET_WM_PID`/WM_CLASS identify apps. |
 | Linux Wayland | wlroots data-control or XWayland fallback | Shortcut/app identification/paste restricted | Source identification fails closed. X11 is the fully supported desktop path. Enable unknown-source capture only if you accept losing exclusion guarantees; do not treat that setting as secure source detection. |
 
+The first clipboard value at startup or after leaving a paused/excluded state is baselined and skipped, so old sensitive clipboard values are not ingested on resume. Copy again after resuming if needed.
+
 Only regular files are managed; directories and symlinks are rejected. A bundle is limited to 64 files and the item-size cap. Names and common UTF-8 text/code contents are searchable. PDF/Office/archive binaries are preserved but not parsed. File restore uses managed copies; the app does not retain original filesystem permissions. Clipboard history is polling-based and can miss rapid intermediate changes. Rich HTML/RTF is represented by plain text; audio and arbitrary custom formats are not supported.
 
 ## Storage and security
@@ -61,7 +63,7 @@ Default data location follows the OS application-data convention (`directories::
 
 History is **not encrypted**. Use OS disk encryption. Root/admin, same-user processes, backups, swap, or malware can read it. Unix permissions are 0700/0600. Clearing uses SQLite secure deletion, checkpointing, vacuum, and blob cleanup, but cannot guarantee forensic erasure on SSDs or backups. Per-app exclusions observe the foreground app, not an authenticated clipboard owner; they reduce accidental collection and are not a security boundary. The arboard backend does not expose password-manager concealment markers; use exclusions and Pause. Do not rely on marker-based secret filtering.
 
-Retention runs on startup and every minute. Pins can prevent size limits from being met. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction and cloud inputs are bounded. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
+Retention runs on startup and every minute. Pins can prevent size limits from being met. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction is bounded to 100,000 characters per supported text file; cloud text inputs are capped at 12,000 characters per item/query. Long items remain fully available to keyword search, while semantic coverage uses the bounded prefix. Native image inputs are thumbnailed to 1280 pixels. OS clipboard backends may decode a full image before the application can enforce the item-size cap. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
 
 ## Build
 

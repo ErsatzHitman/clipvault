@@ -46,7 +46,8 @@ impl ClipboardWorker {
             let mut last:Option<Vec<u8>>=None;
             let mut deadline=Instant::now();
             let mut warned_unknown=false;
-            let mut suppress_until=Instant::now();
+            // Never ingest a value left behind while capture was paused, excluded, or not running.
+            let mut baseline_only=true;
             while !stop.load(Ordering::Relaxed){
                 match rx.recv_timeout(Duration::from_millis(80)){
                     Ok(ClipboardAction::Restore(id,paste))=>{
@@ -67,7 +68,6 @@ impl ClipboardWorker {
                                     clipboard.set().file_list(&files)?;
                                 }
                             }
-                            suppress_until=Instant::now()+Duration::from_secs(2);
                             if let Ok(Some(capture))=read_capture(&mut clipboard,&config.read().unwrap()) {last=Some(fingerprint(&capture));}
                             if paste {let target=focus.lock().unwrap().clone();thread::sleep(Duration::from_millis(120));platform::paste(target.as_ref())?;}
                             Ok(())
@@ -78,14 +78,19 @@ impl ClipboardWorker {
                 }
                 if Instant::now()<deadline{continue;}
                 let c=config.read().unwrap().clone();deadline=Instant::now()+Duration::from_millis(c.poll_ms);
-                if c.paused || Instant::now()<suppress_until{continue;}
+                if c.paused {baseline_only=true;continue;}
                 let before=platform::foreground();
                 let source=before.as_ref().map(|a|a.app.as_str());
                 if source.is_some_and(|s|s.to_lowercase().contains("clipvault")){continue;}
-                if c.excludes(source){if source.is_none()&&!warned_unknown{status("Capture paused: foreground app is unknown. Check OS permissions, or explicitly allow unknown sources in Settings.".into());repaint();warned_unknown=true;}continue;}
+                if c.excludes(source){baseline_only=true;if source.is_none()&&!warned_unknown{status("Capture paused: foreground app is unknown. Check OS permissions, or explicitly allow unknown sources in Settings.".into());repaint();warned_unknown=true;}continue;}
                 warned_unknown=false;
                 if let Some(app)=&before{*focus.lock().unwrap()=Some(app.clone());}
-                if let Ok(Some(capture))=read_capture(&mut clipboard,&c){
+                let observed=read_capture(&mut clipboard,&c);
+                if baseline_only {
+                    if let Ok(capture)=observed {last=capture.as_ref().map(fingerprint);baseline_only=false;}
+                    continue;
+                }
+                if let Ok(Some(capture))=observed {
                     let hash=fingerprint(&capture);
                     if last.as_ref()==Some(&hash){continue;}
                     let after=platform::foreground();
