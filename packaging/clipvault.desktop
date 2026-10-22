@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ClipVault
+Comment=Clipboard history and semantic search
+Exec=clipvault
+Terminal=false
+Categories=Utility;
+StartupNotify=true
