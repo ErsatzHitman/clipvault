@@ -149,6 +149,7 @@ impl Config {
     pub fn excludes(&self, app: Option<&str>) -> bool {
         match app {
             None => !self.capture_when_app_unknown,
+            Some(app) if app.trim().is_empty() => !self.capture_when_app_unknown,
             Some(app) => {
                 let app = app.to_lowercase();
                 self.excluded_apps
@@ -207,6 +208,7 @@ mod tests {
     fn exclusions_fail_closed() {
         let c = Config::default();
         assert!(c.excludes(None));
+        assert!(c.excludes(Some("  ")));
         assert!(c.excludes(Some("com.1password.1password")));
         assert!(!c.excludes(Some("org.mozilla.firefox")));
     }

@@ -24,7 +24,7 @@ $env:OPENROUTER_API_KEY = 'your-key'
 
 Open Settings and enable cloud processing after reviewing the disclosure. The default OpenRouter model is `google/gemini-embedding-2` in **Native multimodal** mode. It embeds text and image thumbnails in the same space. All existing pending history is indexed after enabling cloud. Keyword search and capture work without an API key.
 
-For Fireworks, set `FIREWORKS_API_KEY`, select Fireworks and **Vision caption + text** mode, and enter text-embedding and vision model IDs available to your account. Fireworks endpoint support differs by model. Caption mode embeds the generated image description; it does not compute a native image embedding. Changing provider/model/mode schedules reindexing. Retrieval never compares vectors from different configurations.
+For Fireworks, set `FIREWORKS_API_KEY`, select Fireworks and **Vision caption + text** mode, and enter text-embedding and vision model IDs available to your account. Fireworks endpoint support differs by model. Caption mode embeds the generated image description; it does not compute a native image embedding. Changing provider/model/mode schedules reindexing; the pipeline namespace includes the vision model, so changing it currently reindexes text items too. Retrieval never compares vectors from different configurations.
 
 No API call is made before cloud processing is enabled. Turning it off prevents new calls; an already submitted request cannot be recalled. Semantic queries, text, supported text-file contents, and image thumbnails go to the chosen provider. Provider retention policies apply. Secrets copied from allowed apps can reach the cloud.
 
@@ -34,7 +34,7 @@ No API call is made before cloud processing is enabled. Turning it off prevents 
 - `Ctrl+Shift+Space` opens history. Change the shortcut in Settings, then restart.
 - Type to search. Keyword results appear first; hybrid results combine FTS and semantic ranking. Semantic mode searches only indexed items after the provider responds.
 - Up/Down selects an item. Enter restores it and pastes if enabled. Escape or the close button hides history; capture continues. **Quit** exits the app.
-- Copy restores without hiding. Paste returns to the last observed app. Failed focus verification leaves the content copied for manual paste.
+- Copy restores without hiding. Paste returns to the last observed app. Failed focus verification leaves the content copied for manual paste and reopens history with the error.
 - Pin important items. Pins survive age/count/storage cleanup and can exceed configured limits. Delete removes a single item; Clear all removes pins too and requires confirmation.
 - Pause stops capture and background indexing. Explicit semantic searches can still send queries; disable cloud processing to prevent those.
 
@@ -63,7 +63,7 @@ Default data location follows the OS application-data convention (`directories::
 
 History is **not encrypted**. Use OS disk encryption. Root/admin, same-user processes, backups, swap, or malware can read it. Unix permissions are 0700/0600. Clearing uses SQLite secure deletion, checkpointing, vacuum, and blob cleanup, but cannot guarantee forensic erasure on SSDs or backups. Per-app exclusions observe the foreground app, not an authenticated clipboard owner; they reduce accidental collection and are not a security boundary. The arboard backend does not expose password-manager concealment markers; use exclusions and Pause. Do not rely on marker-based secret filtering.
 
-Retention runs on startup and every minute. Pins can prevent size limits from being met. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction is bounded to 100,000 characters per supported text file; cloud text inputs are capped at 12,000 characters per item/query. Long items remain fully available to keyword search, while semantic coverage uses the bounded prefix. Native image inputs are thumbnailed to 1280 pixels. OS clipboard backends may decode a full image before the application can enforce the item-size cap. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
+Retention runs on startup and every minute. Pins can prevent size limits from being met. The count and size limits apply to unpinned items; pins are outside those budgets. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction is bounded to 100,000 characters per supported text file; cloud text inputs are capped at 12,000 characters per item/query. Long items remain fully available to keyword search, while semantic coverage uses the bounded prefix. Native image inputs are thumbnailed to 1280 pixels. OS clipboard backends may decode a full image before the application can enforce the item-size cap. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
 
 ## Build
 

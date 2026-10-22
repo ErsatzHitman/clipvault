@@ -19,12 +19,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-static STATUS: OnceLock<(Sender<String>, Receiver<String>)> = OnceLock::new();
-pub fn status_receiver() -> &'static Receiver<String> {
+pub enum ClipboardStatus {
+    Message(String),
+    RestoreFailed(String),
+}
+static STATUS: OnceLock<(Sender<ClipboardStatus>, Receiver<ClipboardStatus>)> = OnceLock::new();
+pub fn status_receiver() -> &'static Receiver<ClipboardStatus> {
     &STATUS.get_or_init(|| bounded(32)).1
 }
 fn status(s: String) {
-    let _ = STATUS.get_or_init(|| bounded(32)).0.try_send(s);
+    let _ = STATUS
+        .get_or_init(|| bounded(32))
+        .0
+        .try_send(ClipboardStatus::Message(s));
 }
 pub enum ClipboardAction {
     Restore(i64, bool),
@@ -72,7 +79,7 @@ impl ClipboardWorker {
                             if paste {let target=focus.lock().unwrap().clone();thread::sleep(Duration::from_millis(120));platform::paste(target.as_ref())?;}
                             Ok(())
                         })();
-                        match result{Ok(())=>status("Clipboard restored.".into()),Err(e)=>status(format!("Restore: {e:#}"))};repaint();
+                        match result{Ok(())=>status("Clipboard restored.".into()),Err(e)=>{let _=STATUS.get_or_init(||bounded(32)).0.try_send(ClipboardStatus::RestoreFailed(format!("Restore: {e:#}")));}};repaint();
                     }
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected)=>break,Err(_)=>{}
                 }

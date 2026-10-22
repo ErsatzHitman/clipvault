@@ -65,6 +65,9 @@ pub fn foreground() -> Option<Foreground> {
                 .ok()?;
             Some(String::from_utf8_lossy(&r.value).replace('\0', " "))
         })?;
+    if app.trim().is_empty() {
+        return None;
+    }
     Some(Foreground {
         app: app.trim().to_owned(),
         token: active as u64,
@@ -181,13 +184,19 @@ pub fn paste(target: Option<&Foreground>) -> Result<()> {
         bail!("No target app is known; content was copied. Paste manually.");
     };
     activate(target)?;
-    std::thread::sleep(std::time::Duration::from_millis(180));
-    // Verify focus before injecting, rather than pasting into an unexpected window.
-    let current = foreground();
-    if !current
-        .as_ref()
-        .is_some_and(|f| f.app == target.app && f.token == target.token)
-    {
+    // Window-manager focus requests are asynchronous. Never relax the identity check.
+    let mut verified = false;
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if foreground()
+            .as_ref()
+            .is_some_and(|f| f.app == target.app && f.token == target.token)
+        {
+            verified = true;
+            break;
+        }
+    }
+    if !verified {
         bail!("Target focus could not be verified; paste manually");
     }
     let mut enigo = Enigo::new(&Settings::default())?;

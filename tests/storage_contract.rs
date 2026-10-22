@@ -54,8 +54,10 @@ fn deleted_ids_cannot_receive_inflight_vectors_for_new_items() {
 #[test]
 fn pins_survive_limits_and_unpin_allows_cleanup() {
     let (_d, mut s) = setup();
-    let mut c = Config::default();
-    c.max_entries = 1;
+    let c = Config {
+        max_entries: 1,
+        ..Config::default()
+    };
     let a = s
         .insert(Capture::Text("pin me".into()), "test", &c)
         .unwrap();
@@ -65,7 +67,14 @@ fn pins_survive_limits_and_unpin_allows_cleanup() {
         .unwrap();
     s.cleanup(&c).unwrap();
     assert!(s.get(a).unwrap().is_some());
+    assert!(s.get(b).unwrap().is_some());
+    let latest = s
+        .insert(Capture::Text("latest".into()), "test", &c)
+        .unwrap();
+    s.cleanup(&c).unwrap();
+    assert!(s.get(a).unwrap().is_some());
     assert!(s.get(b).unwrap().is_none());
+    assert!(s.get(latest).unwrap().is_some());
 }
 #[test]
 fn model_changes_do_not_mix_vector_spaces() {
@@ -83,8 +92,10 @@ fn model_changes_do_not_mix_vector_spaces() {
 #[test]
 fn future_schema_and_oversized_items_are_rejected() {
     let (_d, mut s) = setup();
-    let mut c = Config::default();
-    c.max_item_mb = 1;
+    let c = Config {
+        max_item_mb: 1,
+        ..Config::default()
+    };
     assert!(
         s.insert(Capture::Text("x".repeat(1024 * 1024 + 1)), "test", &c)
             .is_err()

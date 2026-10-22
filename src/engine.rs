@@ -59,6 +59,7 @@ impl Engine {
         // Initialize schema once before threads start.
         let mut store = Store::open(paths.clone())?;
         store.cleanup(&c)?;
+        store.reindex_mismatched(&c.model_key())?;
         let config = Arc::new(RwLock::new(c));
         let stop = Arc::new(AtomicBool::new(false));
         let (commands, rx) = bounded(32);
@@ -175,6 +176,8 @@ impl Engine {
                     let c = cfg.read().unwrap().clone();
                     let semantic: Result<Vec<SearchHit>> = (|| {
                         let key = c.model_key();
+                        if !c.cloud_enabled {anyhow::bail!("Cloud semantic search is disabled in Settings");}
+                        if store.vector_count(&key,None)?==0 {anyhow::bail!("Semantic index is empty for this model; enable cloud indexing or rebuild the index");}
                         let vector = if let Some((q, m, v)) = &cache {
                             if *q == request.query && *m == key {
                                 v.clone()
@@ -191,6 +194,7 @@ impl Engine {
                                 .text(&c, &request.query)?
                         };
                         cache = Some((request.query.clone(), key.clone(), vector.clone()));
+                        if store.vector_count(&key,Some(vector.len()))?==0 {anyhow::bail!("Embedding dimensions changed; rebuild the semantic index");}
                         store.semantic(&vector, &key, 300)
                     })();
                     match semantic {
@@ -211,7 +215,7 @@ impl Engine {
                             generation: request.generation,
                             hits: keyword,
                             semantic: false,
-                            error: Some(e.to_string()),
+                            error: if request.mode==SearchMode::Hybrid && !c.cloud_enabled {None}else{Some(e.to_string())},
                         }),
                     }
                 }

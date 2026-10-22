@@ -195,7 +195,13 @@ impl App {
             }
         }
         while let Ok(s) = crate::clipboard::status_receiver().try_recv() {
-            self.status = s;
+            match s {
+                crate::clipboard::ClipboardStatus::Message(s) => self.status = s,
+                crate::clipboard::ClipboardStatus::RestoreFailed(s) => {
+                    self.status = s;
+                    self.show(ctx);
+                }
+            }
         }
     }
     fn settings(&mut self, ctx: &egui::Context) {

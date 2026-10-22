@@ -18,6 +18,12 @@ Blocked before the first matrix run. The current GitHub OAuth token lacks `workf
 
 The workflow includes format, Clippy, all-target tests, release builds, clipboard text/image/file round trips, and native packaging on Ubuntu, Windows, and macOS.
 
+## Independent static review
+
+A read-only DeepSeek review verified the pinned clipboard API calls and the separate keyword/cloud workers. Findings fixed: empty X11 application identity failing open, startup model invalidation, missing/changed-dimension semantic-index status, bounded focus retry, restore errors reopening history, pinned items excluded from unpinned retention budgets, Clippy default-initialization patterns, and unnecessary literal scans when FTS already found matches. Windows storage features and formatting had already been fixed. The reported punctuation-only FTS issue did not reproduce in the focused SQLite check; Rust contract tests remain pending CI.
+
+The strict resume baseline remains intentional: it can skip a legitimate copy near an exclusion transition, favoring privacy over capturing a stale value from an excluded app. Full image decoding/hashing per poll and model-namespace over-invalidation remain documented trade-offs.
+
 ## External/live checks
 
 - OpenRouter multimodal request shape researched against provider documentation.

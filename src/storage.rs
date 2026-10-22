@@ -316,7 +316,7 @@ impl Store {
             })?
             .collect::<rusqlite::Result<_>>()?;
         // Literal substring covers URLs, punctuation, CJK and partial words missed by token search.
-        if hits.len() < limit {
+        if hits.is_empty() {
             let literal = query
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
@@ -439,11 +439,12 @@ impl Store {
             )?;
         }
         // Pins survive age/count cleanup; storage caps still apply to unpinned rows.
-        tx.execute("DELETE FROM entries WHERE pinned=0 AND id NOT IN (SELECT id FROM entries ORDER BY pinned DESC,last_seen DESC,id DESC LIMIT ?1)",[c.max_entries])?;
-        let mut total: u64 =
-            tx.query_row("SELECT coalesce(sum(bytes),0) FROM entries", [], |r| {
-                r.get(0)
-            })?;
+        tx.execute("DELETE FROM entries WHERE pinned=0 AND id NOT IN (SELECT id FROM entries WHERE pinned=0 ORDER BY last_seen DESC,id DESC LIMIT ?1)",[c.max_entries])?;
+        let mut total: u64 = tx.query_row(
+            "SELECT coalesce(sum(bytes),0) FROM entries WHERE pinned=0",
+            [],
+            |r| r.get(0),
+        )?;
         let cap = c.max_storage_mb * 1024 * 1024;
         let old: Vec<(i64, u64)> = {
             let mut s =
@@ -486,6 +487,13 @@ impl Store {
             }
         }
         Ok(())
+    }
+    pub fn vector_count(&self, model: &str, dimensions: Option<usize>) -> Result<u64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM vectors WHERE model=?1 AND (?2 IS NULL OR dimensions=?2)",
+            params![model, dimensions],
+            |r| r.get(0),
+        )?)
     }
     pub fn counts(&self) -> Result<(u64, u64)> {
         Ok(self.conn.query_row(
@@ -561,8 +569,10 @@ mod tests {
     #[test]
     fn cleanup_deletes_blobs_but_preserves_pins() {
         let (_dir, mut s) = store();
-        let mut c = Config::default();
-        c.max_entries = 1;
+        let c = Config {
+            max_entries: 1,
+            ..Config::default()
+        };
         let id = s
             .insert(
                 Capture::Image {
