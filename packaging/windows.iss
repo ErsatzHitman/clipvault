@@ -1,7 +1,10 @@
+#ifndef AppVer
+  #define AppVer "0.0.0"
+#endif
 [Setup]
 AppId={{37C7B223-B8DD-4F5E-9932-6FB1B6E63324}
 AppName=ClipVault
-AppVersion=0.1.0
+AppVersion={#AppVer}
 DefaultDirName={localappdata}\Programs\ClipVault
 DefaultGroupName=ClipVault
 PrivilegesRequired=lowest

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-version=0.1.0
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 arch=$(dpkg --print-architecture)
 root="dist/clipvault_${version}_${arch}"
 mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/applications" "$root/usr/share/doc/clipvault"
