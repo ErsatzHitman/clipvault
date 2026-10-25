@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxtst-dev libxdo-dev libxcb1-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      - name: Build release
+        run: cargo build --locked --release
+
+      # Replaces the clipboard; fine on disposable CI runners. Linux needs an X server.
+      - name: Clipboard round trips (Linux, Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./target/release/clipvault --clipboard-self-test
+
+      - name: Clipboard round trips
+        if: runner.os != 'Linux'
+        run: ./target/release/clipvault --clipboard-self-test
+        shell: bash
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: bash packaging/linux.sh
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: bash packaging/macos.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/windows.ps1
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipvault-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error

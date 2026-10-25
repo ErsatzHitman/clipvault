@@ -333,3 +333,68 @@ pub fn fuse(keyword: Vec<SearchHit>, semantic: Vec<SearchHit>) -> Vec<SearchHit>
     hits.truncate(300);
     hits
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Kind;
+    fn hit(id: i64, last_seen: i64) -> SearchHit {
+        SearchHit {
+            entry: Entry {
+                id,
+                kind: Kind::Text,
+                title: format!("t{id}"),
+                text: String::new(),
+                blob: None,
+                source_app: String::new(),
+                created_at: 0,
+                last_seen,
+                pinned: false,
+                bytes: 0,
+                index_status: "ready".into(),
+                index_error: None,
+            },
+            score: 0.0,
+        }
+    }
+    fn ids(h: &[SearchHit]) -> Vec<i64> {
+        h.iter().map(|h| h.entry.id).collect()
+    }
+    #[test]
+    fn fuse_empty_inputs() {
+        assert!(fuse(vec![], vec![]).is_empty());
+        assert_eq!(ids(&fuse(vec![hit(1, 0)], vec![])), vec![1]);
+        assert_eq!(ids(&fuse(vec![], vec![hit(2, 0)])), vec![2]);
+    }
+    #[test]
+    fn fuse_rewards_agreement_between_lists() {
+        // 2 is rank 1 in both lists and beats 1 and 3, each rank 0 in a single list.
+        let out = fuse(vec![hit(1, 0), hit(2, 0)], vec![hit(3, 0), hit(2, 0)]);
+        assert_eq!(out[0].entry.id, 2);
+        let expected = 2.0 / 61.0;
+        assert!((out[0].score - expected).abs() < 1e-6);
+        assert_eq!(out.len(), 3);
+    }
+    #[test]
+    fn fuse_scores_use_reciprocal_rank() {
+        let out = fuse(vec![hit(1, 0), hit(2, 0)], vec![]);
+        assert!((out[0].score - 1.0 / 60.0).abs() < 1e-7);
+        assert!((out[1].score - 1.0 / 61.0).abs() < 1e-7);
+    }
+    #[test]
+    fn fuse_ties_break_by_most_recent_last_seen() {
+        let out = fuse(vec![hit(1, 10)], vec![hit(2, 99)]);
+        assert_eq!(ids(&out), vec![2, 1]);
+    }
+    #[test]
+    fn fuse_truncates_to_300() {
+        let kw: Vec<_> = (0..250).map(|i| hit(i, 0)).collect();
+        let sem: Vec<_> = (250..500).map(|i| hit(i, 0)).collect();
+        assert_eq!(fuse(kw, sem).len(), 300);
+    }
+    #[test]
+    fn fuse_dedups_same_id_within_one_list() {
+        let out = fuse(vec![hit(1, 0), hit(1, 0)], vec![]);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].score - (1.0 / 60.0 + 1.0 / 61.0)).abs() < 1e-7);
+    }
+}

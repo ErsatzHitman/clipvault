@@ -111,12 +111,11 @@ impl ClipboardWorker {
     }
 }
 fn read_capture(clipboard: &mut Clipboard, c: &Config) -> Result<Option<Capture>> {
-    if c.capture_files {
-        if let Ok(files) = clipboard.get().file_list() {
-            if !files.is_empty() {
-                return Ok(Some(Capture::Files(files)));
-            }
-        }
+    if c.capture_files
+        && let Ok(files) = clipboard.get().file_list()
+        && !files.is_empty()
+    {
+        return Ok(Some(Capture::Files(files)));
     }
     if let Ok(image) = clipboard.get_image() {
         let expected = (image.width as u64)
@@ -134,10 +133,11 @@ fn read_capture(clipboard: &mut Clipboard, c: &Config) -> Result<Option<Capture>
             rgba: image.bytes.into_owned(),
         }));
     }
-    if let Ok(text) = clipboard.get_text() {
-        if !text.trim().is_empty() && text.len() as u64 <= c.max_item_mb * 1024 * 1024 {
-            return Ok(Some(Capture::Text(text)));
-        }
+    if let Ok(text) = clipboard.get_text()
+        && !text.trim().is_empty()
+        && text.len() as u64 <= c.max_item_mb * 1024 * 1024
+    {
+        return Ok(Some(Capture::Text(text)));
     }
     Ok(None)
 }

@@ -168,4 +168,97 @@ mod tests {
                 .contains("disabled")
         );
     }
+    fn decode_data_url(url: &str) -> image::DynamicImage {
+        let b64 = url
+            .strip_prefix("data:image/png;base64,")
+            .expect("png data url prefix");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap()
+    }
+    fn write_png(dir: &Path, name: &str, w: u32, h: u32) -> std::path::PathBuf {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    }
+    #[test]
+    fn large_image_thumbnailed_to_1280_preserving_aspect() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_png(dir.path(), "big.png", 2560, 1280);
+        let img = decode_data_url(&image_data_url(&path).unwrap());
+        assert_eq!((img.width(), img.height()), (1280, 640));
+        let tall = write_png(dir.path(), "tall.png", 640, 2560);
+        let img = decode_data_url(&image_data_url(&tall).unwrap());
+        assert_eq!((img.width(), img.height()), (320, 1280));
+    }
+    #[test]
+    fn small_image_scales_to_1280_longest_side_current_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_png(dir.path(), "small.png", 40, 30);
+        let img = decode_data_url(&image_data_url(&path).unwrap());
+        // image::thumbnail also upscales; pin the current behavior (longest side 1280, aspect kept).
+        assert_eq!((img.width(), img.height()), (1280, 960));
+    }
+    #[test]
+    fn image_data_url_rejects_non_image_and_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        assert!(image_data_url(&bad).is_err());
+        assert!(image_data_url(&dir.path().join("missing.png")).is_err());
+    }
+    #[test]
+    fn native_image_embedding_requires_openrouter() {
+        let c = Config {
+            provider: Provider::Fireworks,
+            cloud_enabled: true,
+            ..Config::default()
+        };
+        let err = Cloud::new()
+            .unwrap()
+            .image(&c, Path::new("/nonexistent"))
+            .unwrap_err();
+        assert!(err.to_string().contains("require OpenRouter"));
+    }
+    #[test]
+    fn image_entry_without_blob_fails_before_network() {
+        let c = Config {
+            cloud_enabled: true,
+            ..Config::default()
+        };
+        let e = Entry {
+            id: 1,
+            kind: Kind::Image,
+            title: "t".into(),
+            text: String::new(),
+            blob: None,
+            source_app: String::new(),
+            created_at: 0,
+            last_seen: 0,
+            pinned: false,
+            bytes: 0,
+            index_status: "pending".into(),
+            index_error: None,
+        };
+        let err = Cloud::new().unwrap().entry(&c, &e, None).unwrap_err();
+        assert!(err.to_string().contains("Missing image blob"));
+    }
+    #[test]
+    fn provider_selects_api_key_env() {
+        let mut c = Config::default();
+        assert_eq!(c.api_key_env(), "OPENROUTER_API_KEY");
+        c.provider = Provider::Fireworks;
+        assert_eq!(c.api_key_env(), "FIREWORKS_API_KEY");
+    }
+    #[test]
+    fn parse_embedding_rejects_malformed_values() {
+        assert!(parse_embedding(&json!({"data":[{"embedding":[1,"x"]}]})).is_err());
+        assert!(parse_embedding(&json!({"data":[]})).is_err());
+        assert!(parse_embedding(&json!({"data":[{"embedding":"abc"}]})).is_err());
+        let v = parse_embedding(&json!({"data":[{"embedding":[0.0,2.0]}]})).unwrap();
+        assert_eq!(v, vec![0.0, 1.0]);
+    }
 }

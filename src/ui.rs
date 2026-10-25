@@ -368,19 +368,25 @@ impl eframe::App for App {
         egui::SidePanel::left("history").default_width(360.0).min_width(240.0).resizable(true).show(ctx,|ui|{
             egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
                 if self.hits.is_empty(){ui.add_space(25.0);ui.label(if self.query.is_empty(){"Copy text, an image, or files to get started. Check capture permissions in Settings."}else{"No matching items."});}
+                let mut open=false;
                 for (i,hit) in self.hits.iter().enumerate(){let e=&hit.entry;let icon=match e.kind{Kind::Text=>"Text",Kind::Image=>"Image",Kind::Files=>"Files"};
                     let label=format!("{}{} · {}\n{}",if e.pinned{"★ "}else{""},icon,e.title,e.source_app);
                     let r=ui.add(egui::Button::selectable(self.selected==i,label).min_size(egui::vec2(ui.available_width(),56.0)));
-                    if r.clicked(){self.selected=i;}if r.double_clicked(){self.selected=i;}
+                    if r.clicked(){self.selected=i;}
+                    if r.double_clicked(){self.selected=i;open=true;}
                     if self.selected==i && ctx.input(|i|i.key_pressed(egui::Key::ArrowDown)||i.key_pressed(egui::Key::ArrowUp)){r.scroll_to_me(Some(egui::Align::Center));}
                 }
+                if open{let paste=self.engine.config.read().unwrap().auto_paste;self.restore(ctx,paste);}
             });
         });
         egui::CentralPanel::default().show(ctx,|ui|{
             if let Some(e)=self.hits.get(self.selected).map(|h|h.entry.clone()) {
                 if self.preview_id!=Some(e.id){self.preview_id=Some(e.id);self.texture=None;self.preview_text="Loading preview…".into();self.command(Command::Preview(e.id));}
                 ui.heading(&e.title);ui.small(format!("{} · {} bytes · {}",e.source_app,e.bytes,e.index_status));if let Some(error)=&e.index_error{ui.small(error);}
-                ui.horizontal(|ui|{if ui.button("Copy").clicked(){self.restore(ctx,false);}if ui.button("Paste").clicked(){self.restore(ctx,true);}if ui.button(if e.pinned{"Unpin"}else{"Pin"}).clicked(){self.command(Command::Pin(e.id,!e.pinned));}if ui.button("Delete").clicked(){self.command(Command::Delete(e.id));self.preview_id=None;}});
+                ui.horizontal(|ui|{if ui.button("Copy").clicked(){self.restore(ctx,false);}
+                if ui.button("Paste").clicked(){self.restore(ctx,true);}
+                if ui.button(if e.pinned{"Unpin"}else{"Pin"}).clicked(){self.command(Command::Pin(e.id,!e.pinned));}
+                if ui.button("Delete").clicked(){self.command(Command::Delete(e.id));self.preview_id=None;}});
                 ui.separator();egui::ScrollArea::both().show(ui,|ui|{if let Some(texture)=&self.texture{ui.add(egui::Image::new(texture).max_width(ui.available_width()).shrink_to_fit());}else{ui.add(egui::Label::new(egui::RichText::new(&self.preview_text).monospace()).wrap());}});
             }else{ui.heading("Your clipboard, searchable.");ui.label("History is stored on this device. Enable cloud processing in Settings for meaning-based search over text and images.");}
         });

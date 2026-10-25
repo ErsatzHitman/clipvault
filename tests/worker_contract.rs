@@ -19,10 +19,10 @@ fn keyword_search_works_without_cloud_or_a_desktop() {
     )));
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Ok(Event::Counts(all, _)) = engine.events.recv_timeout(Duration::from_millis(100)) {
-            if all == 1 {
-                break;
-            }
+        if let Ok(Event::Counts(all, _)) = engine.events.recv_timeout(Duration::from_millis(100))
+            && all == 1
+        {
+            break;
         }
         assert!(
             Instant::now() < deadline,

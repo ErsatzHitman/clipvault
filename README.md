@@ -2,11 +2,11 @@
 
 Cross-platform Rust clipboard history with full-text and cloud multimodal semantic search. Local SQLite metadata/indexes, lossless PNG image files, managed file copies, and a native GPU-rendered desktop UI. No telemetry and no local model downloads.
 
-**Status:** implementation under verification. CI builds and tests Linux, Windows, and macOS. A green build is not a claim that every desktop/compositor, permission flow, or provider model has been manually tested. See [platform limits](#platform-limits).
+**Status:** implementation under verification. A CI workflow (`.github/workflows/ci.yml`) builds and tests Linux, Windows, and macOS, but it has not run on GitHub yet; results are pending the first run. A green build is not a claim that every desktop/compositor, permission flow, or provider model has been manually tested. See [platform limits](#platform-limits).
 
 ## Install and run
 
-Download your OS artifact from the [CI runs](https://github.com/ErsatzHitman/clipvault/actions). Linux artifacts include a `.deb` and portable tarball. macOS has an ad-hoc-signed `.dmg`; Windows has a per-user installer and portable zip. These development artifacts are not notarized or publisher-signed.
+Once CI has run, download your OS artifact from the [CI runs](https://github.com/ErsatzHitman/clipvault/actions); none exist until then. Linux artifacts include a `.deb` and portable tarball. macOS has an ad-hoc-signed `.dmg`; Windows has a per-user installer and portable zip. These development artifacts are not notarized or publisher-signed.
 
 Set the API key **in the environment that launches the app**. Do not put it in a command-line argument or settings file:
 
@@ -33,7 +33,7 @@ No API call is made before cloud processing is enabled. Turning it off prevents 
 - Copy text, images, or regular files. History persists across restarts.
 - `Ctrl+Shift+Space` opens history. Change the shortcut in Settings, then restart.
 - Type to search. Keyword results appear first; hybrid results combine FTS and semantic ranking. Semantic mode searches only indexed items after the provider responds.
-- Up/Down selects an item. Enter restores it and pastes if enabled. Escape or the close button hides history; capture continues. **Quit** exits the app.
+- Up/Down selects an item. Enter or double-click restores it and pastes if enabled. Escape or the close button hides history; capture continues. **Quit** exits the app.
 - Copy restores without hiding. Paste returns to the last observed app. Failed focus verification leaves the content copied for manual paste and reopens history with the error.
 - Pin important items. Pins survive age/count/storage cleanup and can exceed configured limits. Delete removes a single item; Clear all removes pins too and requires confirmation.
 - Pause stops capture and background indexing. Explicit semantic searches can still send queries; disable cloud processing to prevent those.
@@ -75,7 +75,7 @@ cargo build --locked --release
 ./target/release/clipvault
 ```
 
-`cargo fmt --check` is lightweight. Full `cargo test --locked --all-targets`, Clippy, release builds, clipboard round trips, and packaging run on all three OSes in GitHub Actions. Do not run full suites on the project owner's laptop. Provider calls require an external key and are not made by public CI. `--clipboard-self-test` deliberately replaces the clipboard and is intended for disposable CI desktops only.
+`cargo fmt --check` is lightweight. Full `cargo test --locked --all-targets`, Clippy, release builds, clipboard round trips, and packaging are configured to run on all three OSes in GitHub Actions (format check on Linux only). Clippy (`-D warnings`) and tests pass locally on Linux; the Windows and macOS code paths have not been compiled yet. Do not run full suites on the project owner's laptop. Provider calls require an external key and are not made by public CI. `--clipboard-self-test` deliberately replaces the clipboard and is intended for disposable CI desktops only.
 
 See [architecture](docs/ARCHITECTURE.md) for threading, vector-index trade-offs, and threat model. See [verification](docs/VERIFICATION.md) for what has actually been tested.
 

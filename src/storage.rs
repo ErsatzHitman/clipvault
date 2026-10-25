@@ -206,11 +206,10 @@ impl Store {
                             | "js"
                             | "ts"
                             | "py"
-                    ) {
-                        if let Ok(s) = std::str::from_utf8(&data) {
-                            searchable.extend(s.chars().take(100_000));
-                            searchable.push('\n');
-                        }
+                    ) && let Ok(s) = std::str::from_utf8(&data)
+                    {
+                        searchable.extend(s.chars().take(100_000));
+                        searchable.push('\n');
                     }
                     manifest.push(StoredFile { name, stored });
                 }
@@ -449,10 +448,8 @@ impl Store {
         let old: Vec<(i64, u64)> = {
             let mut s =
                 tx.prepare("SELECT id,bytes FROM entries WHERE pinned=0 ORDER BY last_seen,id")?;
-            let rows = s
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            rows
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
         };
         for (id, bytes) in old {
             if total <= cap {
