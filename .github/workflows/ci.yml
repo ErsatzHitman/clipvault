@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag to create and publish as a release (e.g. v0.1.0); leave empty for a plain CI run
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -84,7 +89,7 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -97,7 +102,9 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: ClipVault ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: ClipVault ${{ inputs.release_tag || github.ref_name }}
           prerelease: true
           generate_release_notes: true
           body: |
