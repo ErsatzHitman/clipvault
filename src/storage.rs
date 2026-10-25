@@ -383,9 +383,11 @@ impl Store {
                 continue;
             }
             let score: f32 = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .zip(&vector)
-                .map(|(b, q)| f32::from_le_bytes(b.try_into().unwrap()) * q)
+                .map(|(b, q)| f32::from_le_bytes(*b) * q)
                 .sum();
             if score.is_finite() {
                 scores.push((id, score));
