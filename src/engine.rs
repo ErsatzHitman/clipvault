@@ -81,31 +81,102 @@ impl Engine {
         let cfg = config.clone();
         let end = stop.clone();
         let storage_paths = paths.clone();
-        thread::Builder::new().name("clipvault-storage".into()).spawn(move || {
-            let mut last_cleanup=std::time::Instant::now();
-            let mut changed=true;
-            while !end.load(Ordering::Relaxed) {
-                match rx.recv_timeout(Duration::from_millis(200)) {
-                    Ok(command)=> {
-                        let result:Result<()>= (|| { match command {
-                            Command::Capture(capture,source)=> { let c=cfg.read().unwrap().clone(); if !c.paused && !c.excludes(if source=="Unknown app" {None}else{Some(&source)}) { store.insert(capture,&source,&c)?; changed=true; } }
-                            Command::Delete(id)=> {store.delete(id)?;changed=true;}
-                            Command::Pin(id,pin)=> {store.pin(id,pin)?;changed=true;}
-                            Command::Clear=> {store.clear()?;changed=true;}
-                            Command::Reindex=> {store.reindex()?;changed=true;}
-                            Command::Save(c)=> {c.save(&storage_paths.config)?;store.reindex_mismatched(&c.model_key())?;*cfg.write().unwrap()=c;store.cleanup(&cfg.read().unwrap())?;changed=true;emit(Event::Status("Settings saved. Shortcut changes take effect after restart.".into()));}
-                            Command::Preview(id)=> { if let Some(e)=store.get(id)? { let image=if e.kind==crate::model::Kind::Image { let path=store.blob_path(e.blob.as_deref().unwrap_or(""))?; let img=image::open(path)?.thumbnail(900,700).into_rgba8(); Some((img.width() as usize,img.height() as usize,img.into_raw())) } else {None}; emit(Event::Preview {id,image,text:e.text.chars().take(100_000).collect()}); } }
-                        } Ok(()) })();
-                        if let Err(error)=result {emit(Event::Status(format!("Storage: {error:#}")));}
+        thread::Builder::new()
+            .name("clipvault-storage".into())
+            .spawn(move || {
+                let mut last_cleanup = std::time::Instant::now();
+                let mut changed = true;
+                while !end.load(Ordering::Relaxed) {
+                    match rx.recv_timeout(Duration::from_millis(200)) {
+                        Ok(command) => {
+                            let result: Result<()> = (|| {
+                                match command {
+                                    Command::Capture(capture, source) => {
+                                        let c = cfg.read().unwrap().clone();
+                                        if !c.paused
+                                            && !c.excludes(if source == "Unknown app" {
+                                                None
+                                            } else {
+                                                Some(&source)
+                                            })
+                                        {
+                                            store.insert(capture, &source, &c)?;
+                                            changed = true;
+                                        }
+                                    }
+                                    Command::Delete(id) => {
+                                        store.delete(id)?;
+                                        changed = true;
+                                    }
+                                    Command::Pin(id, pin) => {
+                                        store.pin(id, pin)?;
+                                        changed = true;
+                                    }
+                                    Command::Clear => {
+                                        store.clear()?;
+                                        changed = true;
+                                    }
+                                    Command::Reindex => {
+                                        store.reindex()?;
+                                        changed = true;
+                                    }
+                                    Command::Save(c) => {
+                                        c.save(&storage_paths.config)?;
+                                        store.reindex_mismatched(&c.model_key())?;
+                                        *cfg.write().unwrap() = c;
+                                        store.cleanup(&cfg.read().unwrap())?;
+                                        changed = true;
+                                        emit(Event::Status("Settings saved.".into()));
+                                    }
+                                    Command::Preview(id) => {
+                                        if let Some(e) = store.get(id)? {
+                                            let image = if e.kind == crate::model::Kind::Image {
+                                                let path = store
+                                                    .blob_path(e.blob.as_deref().unwrap_or(""))?;
+                                                let img = image::open(path)?
+                                                    .thumbnail(900, 700)
+                                                    .into_rgba8();
+                                                Some((
+                                                    img.width() as usize,
+                                                    img.height() as usize,
+                                                    img.into_raw(),
+                                                ))
+                                            } else {
+                                                None
+                                            };
+                                            emit(Event::Preview {
+                                                id,
+                                                image,
+                                                text: e.text.chars().take(100_000).collect(),
+                                            });
+                                        }
+                                    }
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                emit(Event::Status(format!("Storage: {error:#}")));
+                            }
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        Err(_) => {}
                     }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected)=>break,
-                    Err(_)=>{}
+                    if last_cleanup.elapsed() > Duration::from_secs(60) {
+                        if let Err(e) = store.cleanup(&cfg.read().unwrap()) {
+                            emit(Event::Status(format!("Cleanup: {e}")));
+                        }
+                        last_cleanup = std::time::Instant::now();
+                    }
+                    if changed {
+                        emit(Event::Changed);
+                        if let Ok((all, ready)) = store.counts() {
+                            emit(Event::Counts(all, ready));
+                        }
+                        changed = false;
+                    }
                 }
-                if last_cleanup.elapsed()>Duration::from_secs(60) { if let Err(e)=store.cleanup(&cfg.read().unwrap()) {emit(Event::Status(format!("Cleanup: {e}")));} last_cleanup=std::time::Instant::now(); }
-                if changed { emit(Event::Changed); if let Ok((all,ready))=store.counts(){emit(Event::Counts(all,ready));} changed=false; }
-            }
-            let _=store.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-        })?;
+                let _ = store.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            })?;
         let (thumbs, thumb_rx) = bounded::<i64>(64);
         let end = stop.clone();
         let thumb_paths = paths.clone();

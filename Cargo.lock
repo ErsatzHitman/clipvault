@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "clipvault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -384,6 +384,7 @@ dependencies = [
  "global-hotkey",
  "image",
  "pdf-extract",
+ "raw-window-handle",
  "reqwest",
  "rusqlite",
  "serde",

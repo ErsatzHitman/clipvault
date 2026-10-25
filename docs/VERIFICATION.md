@@ -35,5 +35,6 @@ The strict resume baseline remains intentional: it can skip a legitimate copy ne
 
 - OpenRouter multimodal request shape researched against provider documentation.
 - A synthetic OpenRouter contract request (generated red square + public test text) was attempted with the environment key. It returned HTTP 401. No clipboard content was used, no key or error-response body was printed. Live provider success remains unverified. Set a valid `OPENROUTER_API_KEY` in the launch environment and run `python3 scripts/cloud_smoke.py`.
+- Under Xvfb, the shortcut recorder captured Ctrl+Alt+V, Save re-registered it live, the old shortcut stopped working, and the new one re-showed the hidden strip. On Windows a hidden window gets no repaints, so the shortcut handler shows the window natively (`platform::reveal`); that path compiles in CI but has not been run on a real Windows desktop.
 - Wayland behavior (data-control capture, source identification, shortcut, paste) is not tested.
 - Physical desktop paste, app exclusions, global shortcuts, OS consent dialogs, and installation are not yet manually verified on all platforms.

@@ -1,6 +1,6 @@
 [package]
 name = "clipvault"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Private-by-default clipboard history with cloud semantic search"
@@ -24,6 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+raw-window-handle = "0.6"
 sha2 = "0.10"
 toml = "0.9"
 

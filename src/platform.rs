@@ -142,6 +142,26 @@ pub fn activate(target: &Foreground) -> Result<()> {
         bail!("Windows refused foreground focus; press Ctrl+V in the target app")
     }
 }
+/// Show our own window natively. Windows never repaints a hidden window, so the app's update
+/// loop can't react to the shortcut until the window is visible again.
+#[cfg(target_os = "windows")]
+pub fn reveal(token: u64) {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{SW_SHOWNA, SetForegroundWindow, ShowWindow},
+    };
+    if token == 0 {
+        return;
+    }
+    let hwnd = HWND(token as *mut _);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNA);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+/// macOS and X11 keep delivering redraws to hidden windows, so the update loop handles it.
+#[cfg(not(target_os = "windows"))]
+pub fn reveal(_token: u64) {}
 #[cfg(target_os = "macos")]
 pub fn foreground() -> Option<Foreground> {
     let out=std::process::Command::new("osascript").args(["-e","tell application \"System Events\" to get bundle identifier of first application process whose frontmost is true"]).output().ok()?;

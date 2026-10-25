@@ -6,13 +6,16 @@ use crate::{
     platform,
 };
 use anyhow::Result;
-use crossbeam_channel::Sender;
-use eframe::egui;
+use crossbeam_channel::{Receiver, Sender};
+use eframe::egui::{self, RichText};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -144,6 +147,165 @@ fn icon_button(
     );
     paint(p, rect, theme::MUTED.lerp_to_gamma(theme::TEXT, h));
     r
+}
+
+/// Rounded card that groups related settings under a small caption.
+fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .size(11.0)
+            .color(theme::MUTED),
+    );
+    ui.add_space(2.0);
+    egui::Frame::new()
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .corner_radius(RADIUS)
+        .inner_margin(egui::Margin::symmetric(16, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+    ui.add_space(14.0);
+}
+
+/// One setting: title and explanation on the left, its control on the right.
+fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        let text_w = (ui.available_width() - 300.0).max(180.0);
+        ui.vertical(|ui| {
+            ui.set_width(text_w);
+            ui.label(egui::RichText::new(title).color(theme::TEXT));
+            ui.add(
+                egui::Label::new(egui::RichText::new(desc).size(11.5).color(theme::MUTED)).wrap(),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+    });
+}
+
+fn divider(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    let (r, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(r, 0, theme::LINE.gamma_multiply(0.7));
+    ui.add_space(4.0);
+}
+
+fn note(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(theme::MUTED)).wrap());
+    ui.add_space(14.0);
+}
+
+/// iOS-style switch with an animated knob.
+fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let (rect, mut r) = ui.allocate_exact_size(egui::vec2(40.0, 22.0), egui::Sense::click());
+    if r.clicked() {
+        *on = !*on;
+        r.mark_changed();
+    }
+    let t =
+        ui.ctx()
+            .animate_bool_with_time_and_easing(r.id, *on, 0.22, egui::emath::easing::back_out);
+    let p = ui.painter();
+    let bg = theme::LINE.lerp_to_gamma(theme::ACCENT, t.clamp(0.0, 1.0));
+    p.rect_filled(
+        rect,
+        11,
+        if r.hovered() {
+            bg.gamma_multiply(1.1)
+        } else {
+            bg
+        },
+    );
+    let x = egui::lerp((rect.left() + 11.0)..=(rect.right() - 11.0), t);
+    p.circle_filled(egui::pos2(x, rect.center().y), 8.0, egui::Color32::WHITE);
+    r
+}
+
+/// Draw a shortcut string such as `Control+Shift+Space` as separate key caps.
+fn keycaps(ui: &mut egui::Ui, hotkey: &str) {
+    for part in pretty_hotkey(hotkey)
+        .split(" + ")
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        egui::Frame::new()
+            .fill(theme::SURFACE_HI)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(part).size(12.5).color(theme::TEXT))
+            });
+    }
+}
+
+fn pretty_hotkey(s: &str) -> String {
+    s.split('+')
+        .map(|p| match p.trim().to_ascii_lowercase().as_str() {
+            "control" | "ctrl" => "Ctrl".to_owned(),
+            "super" | "command" | "cmd" => if cfg!(target_os = "macos") {
+                "Cmd"
+            } else {
+                "Win"
+            }
+            .to_owned(),
+            "alt" | "option" => if cfg!(target_os = "macos") {
+                "Option"
+            } else {
+                "Alt"
+            }
+            .to_owned(),
+            _ => p
+                .trim()
+                .strip_prefix("Key")
+                .filter(|k| k.len() == 1)
+                .unwrap_or(p.trim())
+                .to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// Convert a pressed key combination into a string `global_hotkey` can parse.
+fn hotkey_string(key: egui::Key, m: egui::Modifiers) -> Option<String> {
+    use egui::Key;
+    let name = match key {
+        Key::Escape => return None,
+        Key::Backtick => "Backquote",
+        Key::Equals => "Equal",
+        Key::OpenBracket => "BracketLeft",
+        Key::CloseBracket => "BracketRight",
+        k => k.name(),
+    };
+    let fkey =
+        name.len() > 1 && name.starts_with('F') && name[1..].bytes().all(|b| b.is_ascii_digit());
+    let mut parts: Vec<&str> = [
+        (m.ctrl, "Control"),
+        (m.alt, "Alt"),
+        (m.shift, "Shift"),
+        (m.mac_cmd, "Super"),
+    ]
+    .into_iter()
+    .filter_map(|(on, n)| on.then_some(n))
+    .collect();
+    if parts.is_empty() && !fkey {
+        return None;
+    }
+    parts.push(name);
+    let s = parts.join("+");
+    s.parse::<HotKey>().is_ok().then_some(s)
+}
+
+fn platform_window_token(cc: &eframe::CreationContext<'_>) -> u64 {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match cc.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => h.hwnd.get() as u64,
+        _ => 0,
+    }
 }
 
 fn cross(p: &egui::Painter, c: egui::Pos2, r: f32, color: egui::Color32) {
@@ -289,8 +451,15 @@ fn badge_color(ext: &str) -> egui::Color32 {
 pub struct App {
     engine: Engine,
     clipboard: Sender<ClipboardAction>,
-    _hotkeys: Option<GlobalHotKeyManager>,
+    hotkeys: Option<GlobalHotKeyManager>,
+    hotkey: Option<HotKey>,
     hotkey_id: Option<u32>,
+    hotkey_cell: Arc<AtomicU32>,
+    hk_rx: Receiver<GlobalHotKeyEvent>,
+    settings_tab: usize,
+    recording: bool,
+    rec_mods: egui::Modifiers,
+    clear_armed: Option<Instant>,
     query: String,
     mode: SearchMode,
     generation: u64,
@@ -321,7 +490,6 @@ pub struct App {
     status_seen: String,
     status_at: Instant,
     visible: bool,
-    confirm_clear: bool,
     paths: Paths,
     quitting: bool,
 }
@@ -342,6 +510,21 @@ impl App {
         let mut status = String::new();
         let mut manager = None;
         let mut hotkey_id = None;
+        let mut hotkey = None;
+        // Route shortcut presses through our own channel so they can also reveal a hidden window.
+        let hotkey_cell = Arc::new(AtomicU32::new(0));
+        let token = platform_window_token(cc);
+        let (hk_tx, hk_rx) = crossbeam_channel::bounded(16);
+        {
+            let (ctx, cell) = (cc.egui_ctx.clone(), hotkey_cell.clone());
+            GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+                if event.state == HotKeyState::Pressed && event.id == cell.load(Ordering::Relaxed) {
+                    platform::reveal(token);
+                }
+                let _ = hk_tx.try_send(event);
+                ctx.request_repaint();
+            }));
+        }
         match c.hotkey.parse::<HotKey>() {
             Ok(key) => match GlobalHotKeyManager::new().and_then(|m| {
                 m.register(key)?;
@@ -350,6 +533,8 @@ impl App {
                 Ok(m) => {
                     manager = Some(m);
                     hotkey_id = Some(key.id());
+                    hotkey = Some(key);
+                    hotkey_cell.store(key.id(), Ordering::Relaxed);
                 }
                 Err(e) => status = format!("Shortcut unavailable: {e}. The window remains usable."),
             },
@@ -370,8 +555,15 @@ impl App {
         Ok(Self {
             engine,
             clipboard,
-            _hotkeys: manager,
+            hotkeys: manager,
+            hotkey,
             hotkey_id,
+            hotkey_cell,
+            hk_rx,
+            settings_tab: 0,
+            recording: false,
+            rec_mods: egui::Modifiers::NONE,
+            clear_armed: None,
             query: String::new(),
             mode: SearchMode::Hybrid,
             generation: 0,
@@ -402,7 +594,6 @@ impl App {
             status_seen: String::new(),
             status_at: Instant::now(),
             visible: true,
-            confirm_clear: false,
             paths,
             quitting: false,
         })
@@ -968,47 +1159,552 @@ impl App {
             self.search_open = false;
         }
     }
-    fn settings(&mut self, ctx: &egui::Context) {
-        let mut open = self.settings;
-        egui::Window::new("Settings").open(&mut open).anchor(egui::Align2::CENTER_CENTER,[0.0,0.0]).default_width(520.0).resizable(true).show(ctx,|ui|{
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-70.0).max(200.0)).show(ui,|ui|{
-                ui.heading("Cloud semantic search");
-                ui.label("Text, supported file contents, image thumbnails, and search queries are sent to your cloud provider. History and indexes stay on this device. No telemetry.");
-                ui.checkbox(&mut self.draft.cloud_enabled,"Enable cloud processing of my history and queries");
-                ui.horizontal(|ui|{ui.selectable_value(&mut self.draft.provider,Provider::OpenRouter,"OpenRouter");ui.selectable_value(&mut self.draft.provider,Provider::Fireworks,"Fireworks");});
-                ui.label("Embedding model ID");ui.text_edit_singleline(&mut self.draft.embedding_model);
-                ui.horizontal(|ui|{ui.selectable_value(&mut self.draft.image_embedding,ImageEmbedding::Native,"Native multimodal (OpenRouter)");ui.selectable_value(&mut self.draft.image_embedding,ImageEmbedding::Caption,"Vision caption + text (Fireworks compatible)");});
-                ui.label("Vision model ID (Caption mode only)");ui.text_edit_singleline(&mut self.draft.vision_model);
-                ui.label(format!("API key: set {} in your launch environment. Keys are never saved here.",self.draft.api_key_env()));
-                ui.label(if std::env::var(self.draft.api_key_env()).is_ok_and(|v|!v.trim().is_empty()){"API key is present."}else{"API key is missing."});
-                ui.separator();ui.heading("Capture and privacy");
-                ui.checkbox(&mut self.draft.paused,"Pause capture and background indexing");
-                ui.checkbox(&mut self.draft.capture_files,"Capture regular files (managed copies)");
-                ui.checkbox(&mut self.draft.capture_when_app_unknown,"Capture when source app is unknown (exclusions cannot be enforced)");
-                ui.label("Excluded app names / bundle IDs / executable paths (one substring per line, case-insensitive)");
-                ui.add(egui::TextEdit::multiline(&mut self.exclusions).desired_rows(5));
-                ui.horizontal(|ui|{ui.label("History entries");ui.add(egui::DragValue::new(&mut self.draft.max_entries).range(1..=1_000_000));});
-                ui.horizontal(|ui|{ui.label("Keep days (0 = unlimited)");ui.add(egui::DragValue::new(&mut self.draft.max_age_days).range(0..=3650));});
-                ui.horizontal(|ui|{ui.label("Storage MiB");ui.add(egui::DragValue::new(&mut self.draft.max_storage_mb).range(1..=102400));});
-                ui.horizontal(|ui|{ui.label("Item size MiB");ui.add(egui::DragValue::new(&mut self.draft.max_item_mb).range(1..=100));});
-                ui.horizontal(|ui|{ui.label("Poll interval ms");ui.add(egui::DragValue::new(&mut self.draft.poll_ms).range(200..=60000));});
-                ui.label("Pinned entries survive retention cleanup and may exceed limits.");
-                ui.separator();ui.heading("Desktop");ui.label("Global shortcut (restart required)");ui.text_edit_singleline(&mut self.draft.hotkey);
-                ui.checkbox(&mut self.draft.auto_paste,"Paste automatically after Enter (requires input permissions)");
-                if cfg!(target_os="linux"){ui.label("Wayland: global shortcuts, app identification, and simulated paste may be unavailable. Default capture fails closed. Use an X11 session for full support.");}
-                if cfg!(target_os="macos"){ui.label("macOS: allow Accessibility for paste and Automation → System Events for source-app exclusions.");}
-                ui.separator();
-                if ui.button("Save settings").clicked(){
-                    self.draft.excluded_apps=self.exclusions.lines().map(str::trim).filter(|s|!s.is_empty()).map(String::from).collect();
-                    match self.draft.validate(){Ok(())=>self.command(Command::Save(self.draft.clone())),Err(e)=>self.status=e.to_string()}
+    fn open_settings(&mut self) {
+        self.draft = self.engine.config.read().unwrap().clone();
+        self.exclusions = self.draft.excluded_apps.join("\n");
+        (self.settings, self.recording, self.clear_armed) = (true, false, None);
+    }
+    /// Swap the registered global shortcut without a restart; keeps the old one if the new one is taken.
+    fn apply_hotkey(&mut self, s: &str) -> std::result::Result<(), String> {
+        let key: HotKey = s.parse().map_err(|e| format!("Invalid shortcut: {e}"))?;
+        if self.hotkey == Some(key) {
+            return Ok(());
+        }
+        if self.hotkeys.is_none() {
+            self.hotkeys = Some(
+                GlobalHotKeyManager::new().map_err(|e| format!("Shortcuts unavailable: {e}"))?,
+            );
+        }
+        let m = self.hotkeys.as_ref().unwrap();
+        if let Some(old) = self.hotkey {
+            let _ = m.unregister(old);
+        }
+        if let Err(e) = m.register(key) {
+            if let Some(old) = self.hotkey {
+                let _ = m.register(old);
+            }
+            return Err(format!(
+                "{} is unavailable ({e}). Another app may already use it.",
+                pretty_hotkey(s)
+            ));
+        }
+        self.hotkey = Some(key);
+        self.hotkey_id = Some(key.id());
+        self.hotkey_cell.store(key.id(), Ordering::Relaxed);
+        Ok(())
+    }
+    fn save_settings(&mut self) {
+        self.draft.excluded_apps = self
+            .exclusions
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        if let Err(e) = self.draft.validate() {
+            self.status = e.to_string();
+            return;
+        }
+        let hk = self.draft.hotkey.clone();
+        if let Err(e) = self.apply_hotkey(&hk) {
+            self.status = e;
+            return;
+        }
+        self.command(Command::Save(self.draft.clone()));
+    }
+    fn settings_dirty(&self) -> bool {
+        let cur = self.engine.config.read().unwrap();
+        serde_json::to_string(&*cur).ok() != serde_json::to_string(&self.draft).ok()
+            || cur.excluded_apps.join("\n") != self.exclusions.trim()
+    }
+    /// Capture the next key combination while the shortcut recorder is active.
+    fn record_hotkey(&mut self, ctx: &egui::Context) {
+        // Remember every modifier held since recording began, for releases that arrive after them.
+        self.rec_mods |= ctx.input(|i| i.modifiers);
+        let held = self.rec_mods;
+        let Some((key, mods)) = ctx.input(|i| {
+            // egui turns Ctrl/Cmd+C, X and V presses into clipboard events (or drops them), so
+            // those combinations are taken from their key release instead.
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                egui::Event::Key {
+                    key: key @ (egui::Key::C | egui::Key::V | egui::Key::X),
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if (*modifiers | held).command => Some((*key, *modifiers | held)),
+                _ => None,
+            })
+        }) else {
+            return;
+        };
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Paste(_)
+                )
+            })
+        });
+        if key == egui::Key::Escape {
+            self.recording = false;
+        } else if let Some(s) = hotkey_string(key, mods) {
+            self.draft.hotkey = s;
+            self.recording = false;
+        } else {
+            self.status = "Hold Ctrl, Alt, Shift or Cmd with a key (F-keys work alone).".into();
+        }
+    }
+    fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use egui::{RichText, vec2};
+        let dirty = self.settings_dirty();
+        ui.horizontal(|ui| {
+            let back = icon_button(ui, |p, r, c| {
+                let s = egui::Stroke::new(1.8_f32, c);
+                let m = r.center() + vec2(-1.5, 0.0);
+                p.line_segment([m + vec2(4.0, -5.0), m], s);
+                p.line_segment([m, m + vec2(4.0, 5.0)], s);
+            });
+            if back.on_hover_text("Back (Esc)").clicked() {
+                self.settings = false;
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new("Settings").size(18.0).color(theme::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let save = egui::Button::new(RichText::new("Save").color(if dirty {
+                    egui::Color32::WHITE
+                } else {
+                    theme::MUTED
+                }))
+                .fill(if dirty {
+                    theme::ACCENT.gamma_multiply(0.85)
+                } else {
+                    theme::SURFACE
+                })
+                .corner_radius(16)
+                .min_size(vec2(84.0, PILL - 2.0));
+                if ui.add_enabled(dirty, save).clicked() {
+                    self.save_settings();
                 }
-                if ui.button("Rebuild semantic index").clicked(){self.command(Command::Reindex);}
-                ui.checkbox(&mut self.confirm_clear,"I understand clearing history also removes pinned entries and managed files");
-                if ui.add_enabled(self.confirm_clear,egui::Button::new("Clear all history")).clicked(){self.command(Command::Clear);self.confirm_clear=false;self.thumbs.clear();self.thumb_req.clear();}
-                ui.label(format!("Data: {}",self.paths.root.display()));
+                if dirty
+                    && ui
+                        .add(
+                            egui::Button::new(RichText::new("Discard").color(theme::MUTED))
+                                .frame(false),
+                        )
+                        .clicked()
+                {
+                    self.open_settings();
+                }
+                if !self.status.is_empty() && self.status_at.elapsed() < Duration::from_secs(6) {
+                    ui.add(
+                        egui::Label::new(RichText::new(&self.status).small().color(theme::MUTED))
+                            .truncate(),
+                    );
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                }
             });
         });
-        self.settings = open;
+        ui.add_space(10.0);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(170.0);
+                for (i, (name, hint)) in [
+                    ("General", "Shortcut, paste"),
+                    ("Search & AI", "Cloud embeddings"),
+                    ("Privacy", "Capture rules"),
+                    ("Storage", "Limits, data"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let (rect, r) = ui.allocate_exact_size(vec2(170.0, 46.0), egui::Sense::click());
+                    let on = self.settings_tab == i;
+                    let h = ctx.animate_bool_with_time(r.id, on || r.hovered(), 0.12);
+                    let p = ui.painter();
+                    p.rect_filled(
+                        rect,
+                        10,
+                        theme::BG.lerp_to_gamma(
+                            if on {
+                                theme::SURFACE_HI
+                            } else {
+                                theme::SURFACE
+                            },
+                            h,
+                        ),
+                    );
+                    if on {
+                        p.rect_filled(
+                            egui::Rect::from_min_size(rect.min + vec2(0.0, 12.0), vec2(3.0, 22.0)),
+                            2,
+                            theme::ACCENT,
+                        );
+                    }
+                    p.text(
+                        rect.min + vec2(14.0, 8.0),
+                        egui::Align2::LEFT_TOP,
+                        name,
+                        egui::FontId::proportional(13.5),
+                        if on {
+                            theme::TEXT
+                        } else {
+                            theme::TEXT.gamma_multiply(0.8)
+                        },
+                    );
+                    p.text(
+                        rect.min + vec2(14.0, 27.0),
+                        egui::Align2::LEFT_TOP,
+                        hint,
+                        egui::FontId::proportional(11.0),
+                        theme::MUTED,
+                    );
+                    if r.clicked() {
+                        self.settings_tab = i;
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("settings", self.settings_tab))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_max_width(780.0);
+                        match self.settings_tab {
+                            0 => self.settings_general(ui),
+                            1 => self.settings_cloud(ui),
+                            2 => self.settings_privacy(ui),
+                            _ => self.settings_storage(ui),
+                        }
+                        ui.add_space(12.0);
+                    });
+                });
+        });
+    }
+    fn settings_general(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Keyboard", |ui| {
+            row(
+                ui,
+                "Open ClipVault",
+                "Global shortcut that shows the strip from any app.",
+                |ui| {
+                    let label = if self.recording { "Cancel" } else { "Change" };
+                    if ui.button(label).clicked() {
+                        self.recording = !self.recording;
+                        self.rec_mods = egui::Modifiers::NONE;
+                    }
+                    if self.recording {
+                        let t = ui.input(|i| i.time) as f32;
+                        let pulse = 0.55 + 0.45 * (t * 4.0).sin().abs();
+                        ui.label(
+                            RichText::new("Press keys…").color(theme::ACCENT.gamma_multiply(pulse)),
+                        );
+                        ui.ctx().request_repaint();
+                    } else {
+                        keycaps(ui, &self.draft.hotkey);
+                    }
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Paste after choosing",
+                "Enter or double-click pastes into the app you came from. Turn off to only copy.",
+                |ui| {
+                    toggle(ui, &mut self.draft.auto_paste);
+                },
+            );
+        });
+        section(ui, "Capture", |ui| {
+            row(
+                ui,
+                "Pause capture",
+                "Stops recording new clipboard items and background indexing.",
+                |ui| {
+                    toggle(ui, &mut self.draft.paused);
+                },
+            );
+        });
+        if cfg!(target_os = "macos") {
+            note(
+                ui,
+                "macOS: allow Accessibility for paste and Automation → System Events so excluded apps can be detected.",
+            );
+        }
+        if cfg!(target_os = "linux") {
+            note(
+                ui,
+                "Wayland may block global shortcuts, app detection, and simulated paste. An X11 session gives full support.",
+            );
+        }
+    }
+    fn settings_cloud(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Semantic search", |ui| {
+            row(
+                ui,
+                "Cloud embeddings",
+                "Sends text, file contents, image thumbnails and search queries to your provider. History stays on this device.",
+                |ui| {
+                    toggle(ui, &mut self.draft.cloud_enabled);
+                },
+            );
+            divider(ui);
+            row(ui, "Provider", "Where embeddings are computed.", |ui| {
+                let mut i = usize::from(self.draft.provider == Provider::Fireworks);
+                if segmented(
+                    ui,
+                    egui::Id::new("provider"),
+                    &["OpenRouter", "Fireworks"],
+                    &mut i,
+                ) {
+                    self.draft.provider = if i == 1 {
+                        Provider::Fireworks
+                    } else {
+                        Provider::OpenRouter
+                    };
+                    if i == 1 {
+                        self.draft.image_embedding = ImageEmbedding::Caption;
+                    }
+                }
+            });
+            divider(ui);
+            row(
+                ui,
+                "Images",
+                "Native embeds images directly (OpenRouter). Caption describes them with a vision model first.",
+                |ui| {
+                    let mut i = usize::from(self.draft.image_embedding == ImageEmbedding::Caption);
+                    if segmented(
+                        ui,
+                        egui::Id::new("image-mode"),
+                        &["Native", "Caption"],
+                        &mut i,
+                    ) {
+                        self.draft.image_embedding = if i == 1 {
+                            ImageEmbedding::Caption
+                        } else {
+                            ImageEmbedding::Native
+                        };
+                    }
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Embedding model",
+                "Model ID from your provider.",
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.draft.embedding_model)
+                            .desired_width(240.0),
+                    );
+                },
+            );
+            if self.draft.image_embedding == ImageEmbedding::Caption {
+                divider(ui);
+                row(
+                    ui,
+                    "Vision model",
+                    "Used to caption images before embedding.",
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.draft.vision_model)
+                                .desired_width(240.0),
+                        );
+                    },
+                );
+            }
+            divider(ui);
+            let env = self.draft.api_key_env();
+            let ok = std::env::var(env).is_ok_and(|v| !v.trim().is_empty());
+            row(
+                ui,
+                "API key",
+                &format!(
+                    "Read from {env} in the environment that launches ClipVault. Never stored."
+                ),
+                |ui| {
+                    let (c, t) = if ok {
+                        (egui::Color32::from_rgb(92, 196, 128), "Found")
+                    } else {
+                        (theme::WARN, "Missing")
+                    };
+                    ui.label(RichText::new(t).color(c));
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 4.0, c);
+                },
+            );
+        });
+        section(ui, "Index", |ui| {
+            row(
+                ui,
+                "Rebuild semantic index",
+                "Re-embeds every item with the current settings.",
+                |ui| {
+                    if ui.button("Rebuild").clicked() {
+                        self.command(Command::Reindex);
+                        self.status = "Rebuilding semantic index…".into();
+                    }
+                },
+            );
+        });
+    }
+    fn settings_privacy(&mut self, ui: &mut egui::Ui) {
+        section(ui, "What gets captured", |ui| {
+            row(
+                ui,
+                "Files",
+                "Keep managed copies of files you copy or cut.",
+                |ui| {
+                    toggle(ui, &mut self.draft.capture_files);
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Unknown source apps",
+                "Capture even when the source app can't be identified. Exclusions can't be enforced then.",
+                |ui| {
+                    toggle(ui, &mut self.draft.capture_when_app_unknown);
+                },
+            );
+        });
+        section(ui, "Excluded apps", |ui| {
+            ui.label(RichText::new("One name, bundle ID or executable path per line. Matching is case-insensitive and by substring, e.g. 1password or keepass.").small().color(theme::MUTED));
+            ui.add_space(6.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.exclusions)
+                    .desired_rows(6)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("1password\nkeepassxc"),
+            );
+        });
+    }
+    fn settings_storage(&mut self, ui: &mut egui::Ui) {
+        section(ui, "History limits", |ui| {
+            row(
+                ui,
+                "Items to keep",
+                "Oldest unpinned items are removed first.",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut self.draft.max_entries).range(1..=1_000_000));
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Keep for",
+                "Days before items expire. 0 keeps them forever.",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.max_age_days)
+                            .range(0..=3650)
+                            .suffix(" days"),
+                    );
+                },
+            );
+            divider(ui);
+            row(
+                ui,
+                "Total storage",
+                "Cap on images and file copies.",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.max_storage_mb)
+                            .range(1..=102400)
+                            .suffix(" MiB"),
+                    );
+                },
+            );
+            divider(ui);
+            row(ui, "Largest item", "Bigger copies are skipped.", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.draft.max_item_mb)
+                        .range(1..=100)
+                        .suffix(" MiB"),
+                );
+            });
+            divider(ui);
+            row(
+                ui,
+                "Check clipboard every",
+                "Lower is snappier, higher saves battery.",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.poll_ms)
+                            .range(200..=60000)
+                            .speed(10)
+                            .suffix(" ms"),
+                    );
+                },
+            );
+        });
+        note(ui, "Pinned items are never removed by these limits.");
+        section(ui, "Data", |ui| {
+            row(
+                ui,
+                "Location",
+                &self.paths.root.display().to_string(),
+                |ui| {
+                    if ui.button("Copy path").clicked() {
+                        ui.ctx().copy_text(self.paths.root.display().to_string());
+                        self.status = "Path copied.".into();
+                    }
+                },
+            );
+            divider(ui);
+            let armed = self
+                .clear_armed
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(4));
+            row(
+                ui,
+                "Clear all history",
+                "Deletes every item, including pinned ones and managed files. This can't be undone.",
+                |ui| {
+                    let b = egui::Button::new(
+                        RichText::new(if armed {
+                            "Click again to confirm"
+                        } else {
+                            "Clear all"
+                        })
+                        .color(if armed {
+                            egui::Color32::WHITE
+                        } else {
+                            theme::DANGER
+                        }),
+                    )
+                    .fill(if armed {
+                        theme::DANGER
+                    } else {
+                        theme::SURFACE_HI
+                    });
+                    if ui.add(b).clicked() {
+                        if armed {
+                            self.command(Command::Clear);
+                            self.thumbs.clear();
+                            self.thumb_req.clear();
+                            self.clear_armed = None;
+                            self.status = "History cleared.".into();
+                        } else {
+                            self.clear_armed = Some(Instant::now());
+                        }
+                    }
+                    if armed {
+                        ui.ctx().request_repaint_after(Duration::from_millis(200));
+                    }
+                },
+            );
+        });
     }
 }
 impl eframe::App for App {
@@ -1023,7 +1719,7 @@ impl eframe::App for App {
                 self.quitting = true;
             }
         }
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+        while let Ok(event) = self.hk_rx.try_recv() {
             if Some(event.id) == self.hotkey_id && event.state == HotKeyState::Pressed {
                 self.show(ctx);
             }
@@ -1063,6 +1759,13 @@ impl eframe::App for App {
             }
         }
         let n = self.hits.len();
+        if self.settings {
+            if self.recording {
+                self.record_hotkey(ctx);
+            } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.settings = false;
+            }
+        }
         if !self.settings {
             let editing = ctx.memory(|m| m.has_focus(search_id()));
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -1156,6 +1859,10 @@ impl eframe::App for App {
             self.status_at = Instant::now();
         }
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+            if self.settings {
+                self.settings_page(ui, ctx);
+                return;
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 self.search_bar(ui);
@@ -1174,9 +1881,7 @@ impl eframe::App for App {
                         ui.label(egui::RichText::new(format!("{} items · {} indexed", self.counts.0, self.counts.1)).small().color(theme::MUTED));
                         ui.separator();
                         if ui.button("Settings").clicked() {
-                            self.draft = self.engine.config.read().unwrap().clone();
-                            self.exclusions = self.draft.excluded_apps.join("\n");
-                            self.settings = true;
+                            self.open_settings();
                             ui.close();
                         }
                         let paused = self.engine.config.read().unwrap().paused;
@@ -1256,9 +1961,6 @@ impl eframe::App for App {
                 }
             }
         }
-        if self.settings {
-            self.settings(ctx);
-        }
     }
 }
 #[cfg(test)]
@@ -1270,6 +1972,30 @@ mod tests {
         assert_eq!(visible_range(2100.0, 2600.0, 210.0, 100), 9..14);
         assert_eq!(visible_range(0.0, 500.0, 210.0, 2), 0..2);
         assert_eq!(visible_range(9000.0, 9500.0, 210.0, 3), 3..3);
+    }
+    #[test]
+    fn recorded_shortcuts_parse_and_display() {
+        use egui::{Key, Modifiers};
+        let cs = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(
+            hotkey_string(Key::Space, cs).as_deref(),
+            Some("Control+Shift+Space")
+        );
+        assert_eq!(
+            hotkey_string(Key::Backtick, cs).as_deref(),
+            Some("Control+Shift+Backquote")
+        );
+        assert_eq!(
+            hotkey_string(Key::F8, Modifiers::NONE).as_deref(),
+            Some("F8")
+        );
+        assert_eq!(hotkey_string(Key::V, Modifiers::NONE), None);
+        assert_eq!(hotkey_string(Key::Escape, cs), None);
+        assert_eq!(pretty_hotkey("Control+Shift+KeyV"), "Ctrl + Shift + V");
     }
     #[test]
     fn card_helpers() {
