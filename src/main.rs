@@ -45,12 +45,27 @@ fn run() -> Result<()> {
     if !paths.config.exists() {
         config.save(&paths.config)?;
     }
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("ClipVault")
+        .with_app_id("clipvault");
+    viewport = if config
+        .hotkey
+        .parse::<global_hotkey::hotkey::HotKey>()
+        .is_ok()
+    {
+        // Bottom-docked strip; ui::App positions it above the taskbar when shown.
+        viewport
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_resizable(false)
+            .with_inner_size([1280.0, 300.0])
+            .with_min_inner_size([320.0, 160.0])
+    } else {
+        viewport.with_inner_size([920.0, 620.0])
+    };
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("ClipVault")
-            .with_app_id("clipvault")
-            .with_inner_size([920.0, 620.0])
-            .with_min_inner_size([680.0, 420.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(

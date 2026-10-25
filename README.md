@@ -26,14 +26,15 @@ Open Settings and enable cloud processing after reviewing the disclosure. The de
 
 For Fireworks, set `FIREWORKS_API_KEY`, select Fireworks and **Vision caption + text** mode, and enter text-embedding and vision model IDs available to your account. Fireworks endpoint support differs by model. Caption mode embeds the generated image description; it does not compute a native image embedding. Changing provider/model/mode schedules reindexing; the pipeline namespace includes the vision model, so changing it currently reindexes text items too. Retrieval never compares vectors from different configurations.
 
-No API call is made before cloud processing is enabled. Turning it off prevents new calls; an already submitted request cannot be recalled. Semantic queries, text, supported text-file contents, and image thumbnails go to the chosen provider. Provider retention policies apply. Secrets copied from allowed apps can reach the cloud.
+No API call is made before cloud processing is enabled. Turning it off prevents new calls; an already submitted request cannot be recalled. Semantic queries, text, extracted text-file/PDF/Office contents, and image thumbnails go to the chosen provider. Provider retention policies apply. Secrets copied from allowed apps can reach the cloud.
 
 ## Use
 
 - Copy text, images, or regular files. History persists across restarts.
-- `Ctrl+Shift+Space` opens history. Change the shortcut in Settings, then restart.
-- Type to search. Keyword results appear first; hybrid results combine FTS and semantic ranking. Semantic mode searches only indexed items after the provider responds.
-- Up/Down selects an item. Enter or double-click restores it and pastes if enabled. Escape or the close button hides history; capture continues. **Quit** exits the app.
+- `Ctrl+Shift+Space` opens history as a borderless, always-on-top strip docked to the bottom of the work area (about 28% of its height, clamped to 260-420 points) on the monitor under the pointer. Change the shortcut in Settings, then restart. If the shortcut cannot be registered, the app falls back to a normal 920x620 window.
+- Items are cards in a horizontal strip (mouse wheel scrolls sideways): text snippets, image thumbnails, and file cards with an extension badge, name, and size. Each card shows a pin star, an index-status dot, and size/age. All/Text/Images/Files chips filter the strip.
+- Type to search. Keyword mode is the default; Hybrid combines FTS and semantic ranking; Semantic searches only indexed items after the provider responds. The chip tooltips say whether cloud is off or the semantic index is ready.
+- Left/Right (or Up/Down) selects a card; Home/End jump to the ends when the query is empty. Enter or double-click restores it and pastes if enabled. Right-click offers Copy/Paste/Pin/Delete; Ctrl+P pins; Delete removes when the query is empty. Escape clears the query, then hides. Losing focus also hides the strip; capture continues. The gear menu has Settings, Pause/Resume, and **Quit**.
 - Copy restores without hiding. Paste returns to the last observed app. Failed focus verification leaves the content copied for manual paste and reopens history with the error.
 - Pin important items. Pins survive age/count/storage cleanup and can exceed configured limits. Delete removes a single item; Clear all removes pins too and requires confirmation.
 - Pause stops capture and background indexing. Explicit semantic searches can still send queries; disable cloud processing to prevent those.
@@ -51,7 +52,7 @@ Settings include history count, age, total payload size, per-item size, polling 
 
 The first clipboard value at startup or after leaving a paused/excluded state is baselined and skipped, so old sensitive clipboard values are not ingested on resume. Copy again after resuming if needed.
 
-Only regular files are managed; directories and symlinks are rejected. A bundle is limited to 64 files and the item-size cap. Names and common UTF-8 text/code contents are searchable. PDF/Office/archive binaries are preserved but not parsed. File restore uses managed copies; the app does not retain original filesystem permissions. Clipboard history is polling-based and can miss rapid intermediate changes. Rich HTML/RTF is represented by plain text; audio and arbitrary custom formats are not supported.
+Only regular files are managed; directories and symlinks are rejected. A bundle is limited to 64 files and the item-size cap. Names and common UTF-8/UTF-16 text/code contents are searchable. Text from PDF, docx, pptx, and xlsx files is extracted in the background (files over 50 MB skipped) and becomes searchable by keyword and semantic search once extraction finishes; a failed extraction falls back to name-only indexing. Scanned or encrypted PDFs yield no text (no OCR). Other binaries and archives are preserved but not parsed. File restore uses managed copies; the app does not retain original filesystem permissions. Clipboard history is polling-based and can miss rapid intermediate changes. Rich HTML/RTF is represented by plain text; audio and arbitrary custom formats are not supported.
 
 ## Storage and security
 
@@ -63,7 +64,7 @@ Default data location follows the OS application-data convention (`directories::
 
 History is **not encrypted**. Use OS disk encryption. Root/admin, same-user processes, backups, swap, or malware can read it. Unix permissions are 0700/0600. Clearing uses SQLite secure deletion, checkpointing, vacuum, and blob cleanup, but cannot guarantee forensic erasure on SSDs or backups. Per-app exclusions observe the foreground app, not an authenticated clipboard owner; they reduce accidental collection and are not a security boundary. The arboard backend does not expose password-manager concealment markers; use exclusions and Pause. Do not rely on marker-based secret filtering.
 
-Retention runs on startup and every minute. Pins can prevent size limits from being met. The count and size limits apply to unpinned items; pins are outside those budgets. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction is bounded to 100,000 characters per supported text file; cloud text inputs are capped at 12,000 characters per item/query. Long items remain fully available to keyword search, while semantic coverage uses the bounded prefix. Native image inputs are thumbnailed to 1280 pixels. OS clipboard backends may decode a full image before the application can enforce the item-size cap. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
+Extracted document text is capped at 200,000 characters. Retention runs on startup and every minute. Pins can prevent size limits from being met. The count and size limits apply to unpinned items; pins are outside those budgets. The size limit covers stored payloads, not SQLite/index overhead. Lost/unreferenced blob directories are collected. Text extraction is bounded to 100,000 characters per supported text file; cloud text inputs are capped at 12,000 characters per item/query. Long items remain fully available to keyword search, while semantic coverage uses the bounded prefix. Native image inputs are thumbnailed to 1280 pixels. OS clipboard backends may decode a full image before the application can enforce the item-size cap. Capture and search queues are bounded; an overloaded capture queue retries the current observation rather than blocking the UI.
 
 ## Build
 
@@ -75,7 +76,7 @@ cargo build --locked --release
 ./target/release/clipvault
 ```
 
-`cargo fmt --check` is lightweight. Full `cargo test --locked --all-targets`, Clippy, release builds, clipboard round trips, and packaging are configured to run on all three OSes in GitHub Actions (format check on Linux only). Clippy (`-D warnings`) and tests pass locally on Linux; the Windows and macOS code paths have not been compiled yet. Do not run full suites on the project owner's laptop. Provider calls require an external key and are not made by public CI. `--clipboard-self-test` deliberately replaces the clipboard and is intended for disposable CI desktops only.
+`cargo fmt --check` is lightweight. Full `cargo test --locked --all-targets`, Clippy, release builds, clipboard round trips, and packaging are configured to run on all three OSes in GitHub Actions (format check on Linux only). Clippy (`-D warnings`) and tests pass locally on Linux; the Windows and macOS code paths (including the work-area lookup used to dock the strip) have not been compiled yet. The database schema is now v2, so older ClipVault builds cannot open it. Do not run full suites on the project owner's laptop. Provider calls require an external key and are not made by public CI. `--clipboard-self-test` deliberately replaces the clipboard and is intended for disposable CI desktops only.
 
 See [architecture](docs/ARCHITECTURE.md) for threading, vector-index trade-offs, and threat model. See [verification](docs/VERIFICATION.md) for what has actually been tested.
 

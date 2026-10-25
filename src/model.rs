@@ -50,6 +50,30 @@ pub struct Entry {
     pub bytes: u64,
     pub index_status: String,
     pub index_error: Option<String>,
+    /// JSON `EntryMeta` for card rendering (file name/ext/size, thumbnail path); `None` on old rows.
+    pub meta: Option<String>,
+}
+impl Entry {
+    pub fn meta_info(&self) -> EntryMeta {
+        self.meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_default()
+    }
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileMeta {
+    pub name: String,
+    pub ext: String,
+    pub size: u64,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryMeta {
+    #[serde(default)]
+    pub files: Vec<FileMeta>,
+    /// Blob-relative path of a small PNG thumbnail, if one exists.
+    #[serde(default)]
+    pub thumb: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

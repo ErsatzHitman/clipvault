@@ -1,6 +1,7 @@
 use crate::{
     config::{Config, Paths, private_dir, private_file},
-    model::{Capture, Entry, Kind, SearchHit, now},
+    extract,
+    model::{Capture, Entry, EntryMeta, FileMeta, Kind, SearchHit, now},
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -14,13 +15,14 @@ use std::{
     time::Duration,
 };
 
-const COLUMNS: &str =
-    "id,kind,title,text,blob,source_app,created_at,last_seen,pinned,bytes,index_status,index_error";
-const SUMMARY_COLUMNS: &str = "id,kind,title,substr(text,1,16000),blob,source_app,created_at,last_seen,pinned,bytes,index_status,index_error";
+const COLUMNS: &str = "id,kind,title,text,blob,source_app,created_at,last_seen,pinned,bytes,index_status,index_error,meta";
+const SUMMARY_COLUMNS: &str = "id,kind,title,substr(text,1,16000),blob,source_app,created_at,last_seen,pinned,bytes,index_status,index_error,meta";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredFile {
     pub name: String,
     pub stored: String,
+    #[serde(default)]
+    pub size: u64,
 }
 pub struct Store {
     pub conn: Connection,
@@ -40,6 +42,7 @@ fn entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
         bytes: row.get(9)?,
         index_status: row.get(10)?,
         index_error: row.get(11)?,
+        meta: row.get(12)?,
     })
 }
 impl Store {
@@ -47,7 +50,7 @@ impl Store {
         let conn = Connection::open(&paths.db)?;
         conn.busy_timeout(Duration::from_secs(3))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             bail!("History was created by a newer ClipVault version; refusing to modify it");
         }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
@@ -70,7 +73,18 @@ impl Store {
             CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE OF title,text ON entries BEGIN
                 INSERT INTO entries_fts(entries_fts,rowid,title,text) VALUES('delete',old.id,old.title,old.text);
                 INSERT INTO entries_fts(rowid,title,text) VALUES(new.id,new.title,new.text); END;
-            PRAGMA user_version=1;")?;
+            ")?;
+        let has_meta: bool = conn.query_row(
+            "SELECT count(*)>0 FROM pragma_table_info('entries') WHERE name='meta'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_meta {
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN meta TEXT")?;
+        }
+        if version < 2 {
+            conn.execute_batch("PRAGMA user_version=2")?;
+        }
         private_file(&paths.db)?;
         for ext in ["sqlite3-wal", "sqlite3-shm"] {
             let p = paths.db.with_extension(ext);
@@ -82,6 +96,7 @@ impl Store {
     }
     pub fn insert(&mut self, capture: Capture, source: &str, config: &Config) -> Result<i64> {
         let limit = config.max_item_mb * 1024 * 1024;
+        let (mut status, mut meta) = ("pending", None::<EntryMeta>);
         let (kind, hash, title, text, blob, bytes) = match capture {
             Capture::Text(text) => {
                 if text.trim().is_empty() {
@@ -125,7 +140,11 @@ impl Store {
                         .write_to(&mut encoded, image::ImageFormat::Png)?;
                     self.write_blob(&relative, &encoded.into_inner())?;
                 }
-                let bytes = fs::metadata(target)?.len();
+                let bytes = fs::metadata(&target)?.len();
+                meta = Some(EntryMeta {
+                    files: Vec::new(),
+                    thumb: self.make_thumb(&hash, &target).ok(),
+                });
                 (
                     Kind::Image,
                     hash,
@@ -179,39 +198,30 @@ impl Store {
                 let hash = format!("{:x}", hasher.finalize());
                 let mut manifest = Vec::new();
                 let mut searchable = String::new();
+                let mut files_meta = Vec::new();
                 for (i, (name, data)) in items.into_iter().enumerate() {
                     // A separate directory preserves each original filename, including duplicate names.
                     let stored = format!("{hash}/files/{i}/{name}");
                     self.write_blob(&stored, &data)?;
                     searchable.push_str(&name);
                     searchable.push('\n');
-                    if matches!(
-                        Path::new(&name)
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .as_str(),
-                        "txt"
-                            | "md"
-                            | "rs"
-                            | "json"
-                            | "csv"
-                            | "log"
-                            | "toml"
-                            | "yaml"
-                            | "yml"
-                            | "html"
-                            | "css"
-                            | "js"
-                            | "ts"
-                            | "py"
-                    ) && let Ok(s) = std::str::from_utf8(&data)
+                    if extract::is_plain_text(&name)
+                        && let Some(s) = extract::decode_text(&data)
                     {
                         searchable.extend(s.chars().take(100_000));
                         searchable.push('\n');
                     }
-                    manifest.push(StoredFile { name, stored });
+                    // PDF/Office text needs a real parser; the extraction thread fills it in later.
+                    if extract::needs_extraction(&name) {
+                        status = "extracting";
+                    }
+                    files_meta.push(FileMeta {
+                        ext: extract::ext_of(&name),
+                        size: data.len() as u64,
+                        name: name.clone(),
+                    });
+                    let size = data.len() as u64;
+                    manifest.push(StoredFile { name, stored, size });
                 }
                 let title = manifest
                     .iter()
@@ -220,6 +230,15 @@ impl Store {
                     .join(", ");
                 let relative = format!("{hash}/manifest.json");
                 self.write_blob(&relative, &serde_json::to_vec(&manifest)?)?;
+                let thumb = manifest
+                    .iter()
+                    .find(|f| extract::is_image_name(&f.name))
+                    .and_then(|f| self.blob_path(&f.stored).ok())
+                    .and_then(|p| self.make_thumb(&hash, &p).ok());
+                meta = Some(EntryMeta {
+                    files: files_meta,
+                    thumb,
+                });
                 (
                     Kind::Files,
                     hash,
@@ -230,11 +249,74 @@ impl Store {
                 )
             }
         };
-        self.conn.execute("INSERT INTO entries(hash,kind,title,text,blob,source_app,created_at,last_seen,bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8)
-            ON CONFLICT(hash) DO UPDATE SET last_seen=excluded.last_seen,source_app=excluded.source_app", params![hash,kind.as_str(),title,text,blob,source,now(),bytes])?;
+        let meta = meta.map(|m| serde_json::to_string(&m)).transpose()?;
+        self.conn.execute("INSERT INTO entries(hash,kind,title,text,blob,source_app,created_at,last_seen,bytes,index_status,meta) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?9,?10)
+            ON CONFLICT(hash) DO UPDATE SET last_seen=excluded.last_seen,source_app=excluded.source_app", params![hash,kind.as_str(),title,text,blob,source,now(),bytes,status,meta])?;
         Ok(self
             .conn
             .query_row("SELECT id FROM entries WHERE hash=?1", [hash], |r| r.get(0))?)
+    }
+    /// Writes `{hash}/thumb.png` (at most 320x220) decoded from `src` and returns its blob-relative path.
+    /// Decoding is bounded; failures just mean the card shows an icon instead.
+    pub fn make_thumb(&self, hash: &str, src: &Path) -> Result<String> {
+        let relative = format!("{hash}/thumb.png");
+        if self.blob_path(&relative)?.exists() {
+            return Ok(relative);
+        }
+        let mut reader = image::ImageReader::open(src)?.with_guessed_format()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(20_000);
+        limits.max_image_height = Some(20_000);
+        limits.max_alloc = Some(512 * 1024 * 1024);
+        reader.limits(limits);
+        let mut png = Cursor::new(Vec::new());
+        reader
+            .decode()?
+            .thumbnail(320, 220)
+            .write_to(&mut png, image::ImageFormat::Png)?;
+        self.write_blob(&relative, &png.into_inner())?;
+        Ok(relative)
+    }
+    /// Thumbnail for an image entry or the first image file of a file entry; generated lazily
+    /// for rows captured before thumbnails existed.
+    pub fn thumbnail_for(&self, e: &Entry) -> Option<PathBuf> {
+        let hash = e.blob.as_deref()?.split('/').next()?;
+        let existing = self.blob_path(&format!("{hash}/thumb.png")).ok()?;
+        if existing.exists() {
+            return Some(existing);
+        }
+        let src = match e.kind {
+            Kind::Image => self.blob_path(e.blob.as_deref()?).ok()?,
+            Kind::Files => {
+                let m: Vec<StoredFile> = serde_json::from_slice(
+                    &fs::read(self.blob_path(e.blob.as_deref()?).ok()?).ok()?,
+                )
+                .ok()?;
+                let f = m.iter().find(|f| extract::is_image_name(&f.name))?;
+                self.blob_path(&f.stored).ok()?
+            }
+            Kind::Text => return None,
+        };
+        self.make_thumb(hash, &src)
+            .ok()
+            .and_then(|r| self.blob_path(&r).ok())
+    }
+    /// Next file entry whose PDF/Office text has not been extracted yet. Rows stay in this state
+    /// across restarts, so an interrupted extraction is simply retried.
+    pub fn next_extracting(&self) -> Result<Option<Entry>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM entries WHERE index_status='extracting' ORDER BY id LIMIT 1"),
+                [],
+                entry,
+            )
+            .optional()?)
+    }
+    /// Appends extracted text (searchable via FTS) and releases the entry for embedding.
+    pub fn finish_extraction(&self, id: i64, text: &str) -> Result<()> {
+        self.conn.execute("UPDATE entries SET text=text||?2,index_status='pending',retry_at=0 WHERE id=?1 AND index_status='extracting'", params![id, text])?;
+        Ok(())
     }
     fn write_blob(&self, relative: &str, bytes: &[u8]) -> Result<()> {
         let path = self.blob_path(relative)?;
@@ -588,6 +670,106 @@ mod tests {
         s.insert(Capture::Text("new".into()), "test", &c).unwrap();
         s.cleanup(&c).unwrap();
         assert!(!s.blob_path(&blob).unwrap().exists());
+    }
+    #[test]
+    fn pdf_text_becomes_keyword_searchable_after_extraction() {
+        let (d, mut s) = store();
+        let pdf = d.path().join("Report Q3.pdf");
+        std::fs::write(
+            &pdf,
+            crate::extract::tests::tiny_pdf("Quarterly invoice for Acme Corporation"),
+        )
+        .unwrap();
+        let id = s
+            .insert(Capture::Files(vec![pdf]), "test", &Config::default())
+            .unwrap();
+        let e = s.get(id).unwrap().unwrap();
+        assert_eq!(e.index_status, "extracting");
+        assert!(
+            s.next_pending().unwrap().is_none(),
+            "must not embed a filename-only vector first"
+        );
+        assert!(s.keyword("Acme", 10).unwrap().is_empty());
+        let meta = e.meta_info();
+        assert_eq!(
+            (meta.files[0].ext.as_str(), meta.files[0].size > 0),
+            ("pdf", true)
+        );
+        let next = s.next_extracting().unwrap().unwrap();
+        let text = crate::extract::extract_entry(&s, &next);
+        s.finish_extraction(id, &text).unwrap();
+        assert_eq!(s.get(id).unwrap().unwrap().index_status, "pending");
+        assert_eq!(s.next_pending().unwrap().unwrap().id, id);
+        assert!(s.next_extracting().unwrap().is_none());
+        assert_eq!(s.keyword("acme", 10).unwrap()[0].entry.id, id);
+        assert_eq!(s.keyword("invoice", 10).unwrap().len(), 1);
+        assert_eq!(s.keyword("report", 10).unwrap().len(), 1);
+    }
+    #[test]
+    fn text_files_skip_extraction_and_image_files_get_thumbnails() {
+        let (d, mut s) = store();
+        let txt = d.path().join("n.txt");
+        std::fs::write(&txt, "plain words").unwrap();
+        let id = s
+            .insert(Capture::Files(vec![txt]), "t", &Config::default())
+            .unwrap();
+        assert_eq!(s.get(id).unwrap().unwrap().index_status, "pending");
+        let png = d.path().join("pic.png");
+        image::RgbaImage::from_pixel(640, 480, image::Rgba([1, 2, 3, 255]))
+            .save(&png)
+            .unwrap();
+        let id = s
+            .insert(Capture::Files(vec![png]), "t", &Config::default())
+            .unwrap();
+        let e = s.get(id).unwrap().unwrap();
+        let thumb = e.meta_info().thumb.unwrap();
+        let t = image::open(s.blob_path(&thumb).unwrap()).unwrap();
+        assert_eq!((t.width(), t.height()), (293, 220));
+        assert!(s.thumbnail_for(&e).is_some());
+        let id = s
+            .insert(
+                Capture::Image {
+                    width: 2,
+                    height: 2,
+                    rgba: vec![9; 16],
+                },
+                "t",
+                &Config::default(),
+            )
+            .unwrap();
+        assert!(s.get(id).unwrap().unwrap().meta_info().thumb.is_some());
+    }
+    #[test]
+    fn v1_database_migrates_and_all_queries_read_meta() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::open(d.path().join("data")).unwrap();
+        {
+            let c = Connection::open(&paths.db).unwrap();
+            c.execute_batch("CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+                title TEXT NOT NULL, text TEXT NOT NULL, blob TEXT, source_app TEXT NOT NULL,
+                created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL, index_status TEXT NOT NULL DEFAULT 'pending', index_error TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO entries(hash,kind,title,text,source_app,created_at,last_seen,bytes) VALUES('h','text','old','old entry','x',1,1,3);
+                PRAGMA user_version=1;").unwrap();
+        }
+        let mut s = Store::open(paths.clone()).unwrap();
+        let v: i64 = s
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        assert!(s.get(1).unwrap().unwrap().meta.is_none());
+        s.insert(Capture::Text("fresh entry".into()), "t", &Config::default())
+            .unwrap();
+        assert_eq!(s.recent(10).unwrap().len(), 2);
+        assert_eq!(s.keyword("fresh", 10).unwrap().len(), 1);
+        s.save_vector(1, "m", &[1.0, 0.0]).unwrap();
+        assert_eq!(s.semantic(&[1.0, 0.0], "m", 5).unwrap().len(), 1);
+        assert!(s.next_pending().unwrap().is_some());
+        drop(s);
+        assert!(Store::open(paths).is_ok());
     }
     #[test]
     fn path_traversal_is_rejected() {

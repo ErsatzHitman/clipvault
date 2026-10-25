@@ -175,6 +175,117 @@ pub fn activate(target: &Foreground) -> Result<()> {
         bail!("macOS denied focus restoration; check Automation permissions")
     }
 }
+/// Usable desktop rectangle (x, y, w, h) of the monitor under the pointer, excluding taskbars/docks.
+/// Physical pixels on Windows/Linux, points on macOS (see `WORK_AREA_IN_POINTS`).
+pub type WorkArea = (f32, f32, f32, f32);
+pub const WORK_AREA_IN_POINTS: bool = cfg!(target_os = "macos");
+/// Dock rectangle in egui points: full work-area width, bottom-aligned, ~28% of the height.
+pub fn dock_rect(wa: WorkArea, ppp: f32, in_points: bool) -> (f32, f32, f32, f32) {
+    let k = if in_points { 1.0 } else { 1.0 / ppp.max(0.1) };
+    let (x, y, w, h) = (wa.0 * k, wa.1 * k, wa.2 * k, wa.3 * k);
+    let dh = (h * 0.28).clamp(260.0, 420.0).min(h);
+    (x, y + h - dh, w, dh)
+}
+#[cfg(target_os = "windows")]
+pub fn work_area() -> Option<WorkArea> {
+    use windows::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
+        UI::WindowsAndMessaging::GetCursorPos,
+    };
+    unsafe {
+        let mut p = POINT::default();
+        GetCursorPos(&mut p).ok()?;
+        let m = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(m, &mut mi).as_bool() {
+            return None;
+        }
+        let r = mi.rcWork;
+        Some((
+            r.left as f32,
+            r.top as f32,
+            (r.right - r.left) as f32,
+            (r.bottom - r.top) as f32,
+        ))
+    }
+}
+#[cfg(target_os = "linux")]
+pub fn work_area() -> Option<WorkArea> {
+    use x11rb::{
+        connection::Connection,
+        protocol::xproto::{AtomEnum, ConnectionExt},
+    };
+    if std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s == "wayland") {
+        return None;
+    }
+    let (conn, screen) = x11rb::connect(None).ok()?;
+    let root = conn.setup().roots[screen].root;
+    let atom = |name: &[u8]| {
+        conn.intern_atom(false, name)
+            .ok()?
+            .reply()
+            .ok()
+            .map(|r| r.atom)
+    };
+    let desktop = atom(b"_NET_CURRENT_DESKTOP")
+        .and_then(|a| {
+            conn.get_property(false, root, a, AtomEnum::CARDINAL, 0, 1)
+                .ok()?
+                .reply()
+                .ok()?
+                .value32()?
+                .next()
+        })
+        .unwrap_or(0) as usize;
+    let vals: Vec<u32> = conn
+        .get_property(
+            false,
+            root,
+            atom(b"_NET_WORKAREA")?,
+            AtomEnum::CARDINAL,
+            0,
+            4 * 64,
+        )
+        .ok()?
+        .reply()
+        .ok()?
+        .value32()?
+        .collect();
+    let v = vals
+        .get(desktop * 4..desktop * 4 + 4)
+        .or_else(|| vals.get(0..4))?;
+    (v[2] > 0 && v[3] > 0).then(|| (v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32))
+}
+#[cfg(target_os = "macos")]
+pub fn work_area() -> Option<WorkArea> {
+    let js = "ObjC.import('AppKit');var s=$.NSScreen.mainScreen,f=s.frame,v=s.visibleFrame,p=$.NSScreen.screens.objectAtIndex(0).frame;[f.origin.x,f.origin.y,f.size.width,f.size.height,v.origin.x,v.origin.y,v.size.width,v.size.height,p.size.height].join(',')";
+    let out = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", js])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let n: Vec<f32> = String::from_utf8(out.stdout)
+        .ok()?
+        .trim()
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if n.len() != 9 {
+        return None;
+    }
+    // Cocoa origin is bottom-left of the primary screen; winit uses top-left.
+    Some((n[4], n[8] - (n[5] + n[7]), n[6], n[7]))
+}
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn work_area() -> Option<WorkArea> {
+    None
+}
 pub fn paste(target: Option<&Foreground>) -> Result<()> {
     use enigo::{
         Direction::{Click, Press, Release},
@@ -211,4 +322,17 @@ pub fn paste(target: Option<&Foreground>) -> Result<()> {
     result?;
     release?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn dock_rect_is_bottom_aligned_in_points() {
+        let (x, y, w, h) = dock_rect((0.0, 0.0, 1920.0, 1040.0), 1.0, false);
+        assert_eq!((x, w), (0.0, 1920.0));
+        assert!((h - 291.2).abs() < 0.01 && (y + h - 1040.0).abs() < 0.01);
+        let (_, y, w, h) = dock_rect((0.0, 0.0, 2560.0, 1400.0), 1.5, false);
+        assert!((w - 1706.67).abs() < 0.01 && (y + h - 933.33).abs() < 0.01);
+        assert_eq!(dock_rect((10.0, 20.0, 1000.0, 500.0), 1.0, true).2, 1000.0);
+    }
 }

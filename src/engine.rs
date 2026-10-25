@@ -46,10 +46,15 @@ pub enum Event {
         image: Option<(usize, usize, Vec<u8>)>,
         text: String,
     },
+    Thumb {
+        id: i64,
+        image: Option<(usize, usize, Vec<u8>)>,
+    },
 }
 pub struct Engine {
     pub commands: Sender<Command>,
     pub queries: Sender<SearchRequest>,
+    pub thumbs: Sender<i64>,
     pub events: Receiver<Event>,
     pub config: Arc<RwLock<Config>>,
     pub stop: Arc<AtomicBool>,
@@ -101,6 +106,29 @@ impl Engine {
             }
             let _=store.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         })?;
+        let (thumbs, thumb_rx) = bounded::<i64>(64);
+        let end = stop.clone();
+        let thumb_paths = paths.clone();
+        let thumb_tx = tx.clone();
+        let thumb_paint = repaint.clone();
+        thread::Builder::new()
+            .name("clipvault-thumbs".into())
+            .spawn(move || {
+                let Ok(store) = Store::open(thumb_paths) else {
+                    return;
+                };
+                while !end.load(Ordering::Relaxed) {
+                    let Ok(id) = thumb_rx.recv_timeout(Duration::from_millis(200)) else {
+                        continue;
+                    };
+                    let image = make_thumb(&store, id);
+                    while thumb_tx.is_full() && !end.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    let _ = thumb_tx.try_send(Event::Thumb { id, image });
+                    thumb_paint();
+                }
+            })?;
         let (semantic_tx, semantic_rx) = bounded::<(SearchRequest, Vec<SearchHit>)>(1);
         let replace_stale = semantic_rx.clone();
         let end = stop.clone();
@@ -220,6 +248,30 @@ impl Engine {
                     }
                 }
             })?;
+        // PDF/Office text extraction runs on its own thread so parsing never blocks capture, search or the UI.
+        let end = stop.clone();
+        let extract_paths = paths.clone();
+        let extract_tx = tx.clone();
+        let extract_paint = repaint.clone();
+        thread::Builder::new()
+            .name("clipvault-extract".into())
+            .spawn(move || {
+                let Ok(store) = Store::open(extract_paths) else {
+                    return;
+                };
+                while !end.load(Ordering::Relaxed) {
+                    match store.next_extracting() {
+                        Ok(Some(e)) => {
+                            let text = crate::extract::extract_entry(&store, &e);
+                            // Always release the entry: on failure it is still indexed by file name.
+                            let _ = store.finish_extraction(e.id, &text);
+                            let _ = extract_tx.try_send(Event::Changed);
+                            extract_paint();
+                        }
+                        _ => thread::sleep(Duration::from_millis(500)),
+                    }
+                }
+            })?;
         let cfg = config.clone();
         let end = stop.clone();
         let paint = repaint;
@@ -293,6 +345,7 @@ impl Engine {
         Ok(Self {
             commands,
             queries,
+            thumbs,
             events,
             config,
             stop,
@@ -309,6 +362,33 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+}
+/// Card thumbnail for an image entry, or for the first image file of a file entry.
+fn make_thumb(store: &Store, id: i64) -> Option<(usize, usize, Vec<u8>)> {
+    use crate::model::Kind;
+    let e = store.get(id).ok()??;
+    let path = match e.kind {
+        Kind::Text => return None,
+        Kind::Image => store.blob_path(e.blob.as_deref()?).ok()?,
+        Kind::Files => {
+            let manifest = std::fs::read(store.blob_path(e.blob.as_deref()?).ok()?).ok()?;
+            let files: Vec<crate::storage::StoredFile> = serde_json::from_slice(&manifest).ok()?;
+            let first = files.first()?;
+            let ext = std::path::Path::new(&first.name)
+                .extension()?
+                .to_str()?
+                .to_lowercase();
+            if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                return None;
+            }
+            store.blob_path(&first.stored).ok()?
+        }
+    };
+    if std::fs::metadata(&path).ok()?.len() > 64 << 20 {
+        return None;
+    }
+    let img = image::open(path).ok()?.thumbnail(360, 240).into_rgba8();
+    Some((img.width() as usize, img.height() as usize, img.into_raw()))
 }
 pub fn fuse(keyword: Vec<SearchHit>, semantic: Vec<SearchHit>) -> Vec<SearchHit> {
     let mut scores: HashMap<i64, (Entry, f32)> = HashMap::new();
@@ -352,6 +432,7 @@ mod tests {
                 bytes: 0,
                 index_status: "ready".into(),
                 index_error: None,
+                meta: None,
             },
             score: 0.0,
         }

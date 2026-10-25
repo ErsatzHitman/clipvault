@@ -2,7 +2,7 @@
 use crate::{
     config::{Config, ImageEmbedding, Provider},
     model::{Entry, Kind},
-    storage::normalize,
+    storage::{StoredFile, normalize},
 };
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -78,16 +78,20 @@ impl Cloud {
     }
     pub fn entry(&self, c: &Config, e: &Entry, blob: Option<&Path>) -> Result<Vec<f32>> {
         match e.kind {
-            Kind::Text | Kind::Files => self.text(c, &format!("{}\n{}", e.title, e.text)),
-            Kind::Image => {
-                let path = blob.context("Missing image blob")?;
-                match c.image_embedding {
-                    ImageEmbedding::Native => self.image(c, path),
-                    ImageEmbedding::Caption => {
-                        let caption = self.caption(c, path)?;
-                        self.text(c, &caption)
-                    }
-                }
+            Kind::Text => self.text(c, &format!("{}\n{}", e.title, e.text)),
+            Kind::Files => match blob.and_then(single_image_file) {
+                Some(path) => self.embed_image(c, &path),
+                None => self.text(c, &format!("{}\n{}", e.title, e.text)),
+            },
+            Kind::Image => self.embed_image(c, blob.context("Missing image blob")?),
+        }
+    }
+    fn embed_image(&self, c: &Config, path: &Path) -> Result<Vec<f32>> {
+        match c.image_embedding {
+            ImageEmbedding::Native => self.image(c, path),
+            ImageEmbedding::Caption => {
+                let caption = self.caption(c, path)?;
+                self.text(c, &caption)
             }
         }
     }
@@ -116,6 +120,23 @@ impl Cloud {
         }
         Ok(text.chars().take(12000).collect())
     }
+}
+/// For a file entry (`blob` = its manifest) holding exactly one png/jpeg/webp file, that file's path.
+fn single_image_file(manifest: &Path) -> Option<std::path::PathBuf> {
+    let files: Vec<StoredFile> = serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    let [f] = files.as_slice() else { return None };
+    if !crate::extract::is_image_name(&f.name) {
+        return None;
+    }
+    let root = manifest.parent()?.parent()?;
+    let path = Path::new(&f.stored);
+    if path
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(root.join(path))
 }
 fn image_data_url(path: &Path) -> Result<String> {
     let image = image::ImageReader::open(path)?
@@ -242,9 +263,56 @@ mod tests {
             bytes: 0,
             index_status: "pending".into(),
             index_error: None,
+            meta: None,
         };
         let err = Cloud::new().unwrap().entry(&c, &e, None).unwrap_err();
         assert!(err.to_string().contains("Missing image blob"));
+    }
+    #[test]
+    fn image_file_entries_take_the_image_path_and_others_the_text_path() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("h/files/0")).unwrap();
+        std::fs::write(root.join("h/files/0/a.png"), b"x").unwrap();
+        let m = root.join("h/manifest.json");
+        let one = |name: &str| {
+            serde_json::to_vec(&[StoredFile {
+                name: name.into(),
+                stored: format!("h/files/0/{name}"),
+                size: 1,
+            }])
+            .unwrap()
+        };
+        std::fs::write(&m, one("a.png")).unwrap();
+        assert_eq!(single_image_file(&m).unwrap(), root.join("h/files/0/a.png"));
+        std::fs::write(&m, one("a.pdf")).unwrap();
+        assert!(single_image_file(&m).is_none());
+        std::fs::write(&m, b"not json").unwrap();
+        assert!(single_image_file(&m).is_none());
+        // Image-file entries fail inside the image path (cloud disabled / Fireworks), never on the text path.
+        let c = Config {
+            cloud_enabled: true,
+            provider: Provider::Fireworks,
+            ..Config::default()
+        };
+        std::fs::write(&m, one("a.png")).unwrap();
+        let e = Entry {
+            id: 1,
+            kind: Kind::Files,
+            title: "a.png".into(),
+            text: "a.png".into(),
+            blob: Some("h/manifest.json".into()),
+            source_app: String::new(),
+            created_at: 0,
+            last_seen: 0,
+            pinned: false,
+            bytes: 1,
+            index_status: "pending".into(),
+            index_error: None,
+            meta: None,
+        };
+        let err = Cloud::new().unwrap().entry(&c, &e, Some(&m)).unwrap_err();
+        assert!(err.to_string().contains("require OpenRouter"));
     }
     #[test]
     fn provider_selects_api_key_env() {

@@ -112,10 +112,13 @@ impl ClipboardWorker {
 }
 fn read_capture(clipboard: &mut Clipboard, c: &Config) -> Result<Option<Capture>> {
     if c.capture_files
-        && let Ok(files) = clipboard.get().file_list()
-        && !files.is_empty()
+        && let Ok(mut files) = clipboard.get().file_list()
     {
-        return Ok(Some(Capture::Files(files)));
+        // Folders and symlinks cannot be stored; fall through to image/text for those clipboards.
+        files.retain(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()));
+        if !files.is_empty() {
+            return Ok(Some(Capture::Files(files)));
+        }
     }
     if let Ok(image) = clipboard.get_image() {
         let expected = (image.width as u64)

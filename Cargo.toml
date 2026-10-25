@@ -15,8 +15,10 @@ crossbeam-channel = "0.5"
 directories = "6"
 eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 enigo = "0.6"
+flate2 = "1"
 fs2 = "0.4"
 global-hotkey = "0.7"
+pdf-extract = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -29,7 +31,7 @@ toml = "0.9"
 x11rb = { version = "0.13", features = ["res"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Graphics_Gdi"] }
 
 [dev-dependencies]
 tempfile = "3"
