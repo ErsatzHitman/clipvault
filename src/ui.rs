@@ -19,6 +19,212 @@ use std::{
 const CARD_W: f32 = 200.0;
 const GAP: f32 = 10.0;
 const THUMB_CAP: usize = 96;
+fn search_id() -> egui::Id {
+    egui::Id::new("search-edit")
+}
+const PILL: f32 = 34.0;
+const RADIUS: u8 = 12;
+
+/// One small palette shared by every surface in the strip.
+mod theme {
+    use eframe::egui::Color32;
+    pub const BG: Color32 = Color32::from_rgb(20, 21, 25);
+    pub const SURFACE: Color32 = Color32::from_rgb(30, 32, 38);
+    pub const SURFACE_HI: Color32 = Color32::from_rgb(40, 43, 51);
+    pub const LINE: Color32 = Color32::from_rgb(52, 56, 66);
+    pub const TEXT: Color32 = Color32::from_rgb(228, 231, 238);
+    pub const MUTED: Color32 = Color32::from_rgb(134, 140, 154);
+    pub const ACCENT: Color32 = Color32::from_rgb(122, 146, 255);
+    pub const WARN: Color32 = Color32::from_rgb(232, 178, 72);
+    pub const DANGER: Color32 = Color32::from_rgb(232, 96, 96);
+}
+
+fn apply_theme(ctx: &egui::Context) {
+    use egui::{FontFamily::Proportional, FontId, Stroke, TextStyle};
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = theme::BG;
+    v.window_fill = theme::SURFACE;
+    v.extreme_bg_color = theme::BG;
+    v.faint_bg_color = theme::SURFACE;
+    v.window_stroke = Stroke::new(1.0_f32, theme::LINE);
+    v.window_corner_radius = 14.into();
+    v.menu_corner_radius = 12.into();
+    let shadow = egui::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(110),
+    };
+    (v.window_shadow, v.popup_shadow) = (shadow, shadow);
+    v.selection.bg_fill = theme::ACCENT.gamma_multiply(0.45);
+    v.selection.stroke = Stroke::new(1.0_f32, theme::ACCENT);
+    v.hyperlink_color = theme::ACCENT;
+    let w = &mut v.widgets;
+    for s in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
+        s.corner_radius = 8.into();
+        s.expansion = 0.0;
+    }
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, theme::LINE);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, theme::TEXT.gamma_multiply(0.9));
+    (w.inactive.bg_fill, w.inactive.weak_bg_fill) = (theme::SURFACE_HI, theme::SURFACE_HI);
+    w.inactive.bg_stroke = Stroke::NONE;
+    w.inactive.fg_stroke = Stroke::new(1.0_f32, theme::TEXT);
+    (w.hovered.bg_fill, w.hovered.weak_bg_fill) = (theme::LINE, theme::LINE);
+    w.hovered.bg_stroke = Stroke::NONE;
+    w.hovered.fg_stroke = Stroke::new(1.0_f32, theme::TEXT);
+    (w.active.bg_fill, w.active.weak_bg_fill) = (
+        theme::ACCENT.gamma_multiply(0.6),
+        theme::ACCENT.gamma_multiply(0.6),
+    );
+    w.active.bg_stroke = Stroke::NONE;
+    (w.open.bg_fill, w.open.weak_bg_fill) = (theme::SURFACE_HI, theme::SURFACE_HI);
+    let mut style = egui::Style {
+        visuals: v,
+        always_scroll_the_only_direction: true,
+        ..Default::default()
+    };
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.interact_size.y = 28.0;
+    style.spacing.menu_margin = egui::Margin::same(8);
+    style.spacing.window_margin = egui::Margin::same(18);
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
+    for (t, size) in [
+        (TextStyle::Small, 11.0),
+        (TextStyle::Body, 13.5),
+        (TextStyle::Button, 13.5),
+        (TextStyle::Heading, 17.0),
+    ] {
+        style.text_styles.insert(t, FontId::new(size, Proportional));
+    }
+    ctx.set_style(style);
+}
+
+/// Move toward `target` along an ease-out-back curve, so changes overshoot a little and settle.
+fn spring(ctx: &egui::Context, id: egui::Id, target: f32, secs: f32) -> f32 {
+    let now = ctx.input(|i| i.time);
+    let Some((from, to, start)) = ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id)) else {
+        ctx.data_mut(|d| d.insert_temp(id, (target, target, now - secs as f64)));
+        return target;
+    };
+    let t = (((now - start) / secs as f64) as f32).clamp(0.0, 1.0);
+    let cur = from + (to - from) * egui::emath::easing::back_out(t);
+    if to != target {
+        ctx.data_mut(|d| d.insert_temp(id, (cur, target, now)));
+    }
+    if to != target || t < 1.0 {
+        ctx.request_repaint();
+    }
+    cur
+}
+
+/// Round, borderless icon button; `paint` draws the glyph in the hover-aware colour.
+fn icon_button(
+    ui: &mut egui::Ui,
+    paint: impl FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(PILL, PILL), egui::Sense::click());
+    let h = ui.ctx().animate_bool_with_time(r.id, r.hovered(), 0.12);
+    let p = ui.painter();
+    p.circle_filled(
+        rect.center(),
+        PILL / 2.0,
+        theme::SURFACE.lerp_to_gamma(theme::SURFACE_HI, h),
+    );
+    p.circle_stroke(
+        rect.center(),
+        PILL / 2.0 - 0.5,
+        egui::Stroke::new(1.0_f32, theme::LINE),
+    );
+    paint(p, rect, theme::MUTED.lerp_to_gamma(theme::TEXT, h));
+    r
+}
+
+fn cross(p: &egui::Painter, c: egui::Pos2, r: f32, color: egui::Color32) {
+    let s = egui::Stroke::new(1.5_f32, color);
+    p.line_segment([c + egui::vec2(-r, -r), c + egui::vec2(r, r)], s);
+    p.line_segment([c + egui::vec2(-r, r), c + egui::vec2(r, -r)], s);
+}
+
+fn magnifier(p: &egui::Painter, c: egui::Pos2, color: egui::Color32) {
+    let s = egui::Stroke::new(1.7_f32, color);
+    p.circle_stroke(c + egui::vec2(-1.5, -1.5), 5.5, s);
+    p.line_segment([c + egui::vec2(2.6, 2.6), c + egui::vec2(6.5, 6.5)], s);
+}
+
+/// Pill-shaped segmented control with a sliding highlight. Returns true when the value changed.
+fn segmented(ui: &mut egui::Ui, id: egui::Id, labels: &[&str], value: &mut usize) -> bool {
+    use egui::{Rect, Sense, vec2};
+    let font = egui::FontId::proportional(13.0);
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|l| {
+            ui.painter()
+                .layout_no_wrap((*l).to_owned(), font.clone(), theme::TEXT)
+                .size()
+                .x
+                + 26.0
+        })
+        .collect();
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 6.0, PILL), Sense::hover());
+    let mut x = rect.min.x + 3.0;
+    let segs: Vec<Rect> = widths
+        .iter()
+        .map(|w| {
+            let r = Rect::from_min_size(egui::pos2(x, rect.min.y + 3.0), vec2(*w, PILL - 6.0));
+            x += w;
+            r
+        })
+        .collect();
+    let mut changed = false;
+    for (i, seg) in segs.iter().enumerate() {
+        if ui.interact(*seg, id.with(i), Sense::click()).clicked() && *value != i {
+            *value = i;
+            changed = true;
+        }
+    }
+    let target = segs[(*value).min(segs.len() - 1)];
+    let ax = spring(ui.ctx(), id.with("x"), target.min.x - rect.min.x, 0.34);
+    let aw = spring(ui.ctx(), id.with("w"), target.width(), 0.34);
+    let p = ui.painter();
+    p.rect_filled(rect, (PILL / 2.0) as u8, theme::SURFACE);
+    p.rect_stroke(
+        rect,
+        (PILL / 2.0) as u8,
+        egui::Stroke::new(1.0_f32, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    let knob = Rect::from_min_size(
+        egui::pos2(rect.min.x + ax, target.min.y),
+        vec2(aw.max(8.0), target.height()),
+    );
+    p.rect_filled(knob, (knob.height() / 2.0) as u8, theme::SURFACE_HI);
+    for (i, (seg, label)) in segs.iter().zip(labels).enumerate() {
+        let hov = ui.rect_contains_pointer(*seg);
+        let c = if i == *value {
+            theme::TEXT
+        } else if hov {
+            theme::TEXT.gamma_multiply(0.8)
+        } else {
+            theme::MUTED
+        };
+        p.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            c,
+        );
+    }
+    changed
+}
 
 struct Thumb {
     tex: Option<egui::TextureHandle>,
@@ -77,7 +283,7 @@ fn badge_color(ext: &str) -> egui::Color32 {
         .bytes()
         .fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     let hue = (h % 360) as f32 / 360.0;
-    egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.55, 0.65, 1.0))
+    egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.5, 0.95, 1.0))
 }
 
 pub struct App {
@@ -110,6 +316,10 @@ pub struct App {
     counts: (u64, u64),
     semantic: bool,
     focus_search: bool,
+    search_open: bool,
+    mode_menu: bool,
+    status_seen: String,
+    status_at: Instant,
     visible: bool,
     confirm_clear: bool,
     paths: Paths,
@@ -156,15 +366,7 @@ impl App {
                 cc.egui_ctx.send_viewport_cmd(cmd);
             }
         }
-        cc.egui_ctx.set_style(egui::Style {
-            spacing: egui::Spacing {
-                item_spacing: egui::vec2(8.0, 8.0),
-                button_padding: egui::vec2(10.0, 5.0),
-                ..Default::default()
-            },
-            always_scroll_the_only_direction: true,
-            ..Default::default()
-        });
+        apply_theme(&cc.egui_ctx);
         Ok(Self {
             engine,
             clipboard,
@@ -194,7 +396,11 @@ impl App {
             status,
             counts: (0, 0),
             semantic: false,
-            focus_search: true,
+            focus_search: false,
+            search_open: false,
+            mode_menu: false,
+            status_seen: String::new(),
+            status_at: Instant::now(),
             visible: true,
             confirm_clear: false,
             paths,
@@ -249,7 +455,8 @@ impl App {
         self.was_focused = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        self.focus_search = true;
+        self.focus_search = false;
+        self.search_open = false;
         self.query.clear();
         self.selected = 0;
         self.scroll_to_selected = true;
@@ -375,62 +582,55 @@ impl App {
         let e = &hit.entry;
         let r = ui.interact(rect, ui.id().with(("card", e.id)), Sense::click());
         let (sel, hov) = (self.selected == i, r.hovered());
-        let v = ui.visuals().clone();
-        let p = ui.painter_at(rect);
+        let ctx = ui.ctx().clone();
+        let ht = ctx.animate_bool_with_time(r.id.with("hover"), hov || sel, 0.14);
+        let st = ctx.animate_bool_with_time_and_easing(
+            r.id.with("sel"),
+            sel,
+            0.22,
+            egui::emath::easing::back_out,
+        );
+        // Hovered and selected cards lift slightly.
+        let rect = rect.translate(vec2(0.0, -3.0 * ht));
+        let p = ui.painter().clone();
+        if st > 0.01 {
+            p.rect_filled(
+                rect.expand(4.0 * st),
+                RADIUS + 4,
+                theme::ACCENT.gamma_multiply(0.16 * st.min(1.0)),
+            );
+        }
         p.rect_filled(
             rect,
-            8,
-            if hov {
-                v.widgets.hovered.bg_fill
-            } else {
-                v.widgets.inactive.bg_fill
-            },
+            RADIUS,
+            theme::SURFACE.lerp_to_gamma(theme::SURFACE_HI, ht),
         );
         p.rect_stroke(
             rect,
-            8,
-            if sel {
-                Stroke::new(2.0_f32, v.selection.stroke.color)
-            } else {
-                Stroke::new(1.0_f32, v.widgets.noninteractive.bg_stroke.color)
-            },
+            RADIUS,
+            Stroke::new(
+                1.0 + st.clamp(0.0, 1.0),
+                theme::LINE.lerp_to_gamma(theme::ACCENT, st.clamp(0.0, 1.0)),
+            ),
             StrokeKind::Inside,
         );
-        let dim = v.weak_text_color();
-        let (kind, color) = match e.kind {
-            Kind::Text => ("TEXT", dim),
-            Kind::Image => ("IMAGE", dim),
-            Kind::Files => ("FILES", dim),
-        };
-        p.text(
-            rect.min + vec2(10.0, 7.0),
-            Align2::LEFT_TOP,
-            format!("{}{kind}", if e.pinned { "★ " } else { "" }),
-            FontId::proportional(11.0),
-            color,
-        );
         let body =
-            egui::Rect::from_min_max(rect.min + vec2(10.0, 26.0), rect.max - vec2(10.0, 26.0));
+            egui::Rect::from_min_max(rect.min + vec2(12.0, 12.0), rect.max - vec2(12.0, 30.0));
         let bp = ui.painter_at(body);
-        let draw_thumb = |bp: &egui::Painter, tex: &egui::TextureHandle, area: egui::Rect| {
+        let draw_thumb = |ui: &egui::Ui, tex: &egui::TextureHandle, area: egui::Rect| {
             let s = tex.size_vec2();
             let k = (area.width() / s.x).min(area.height() / s.y);
-            let img = egui::Rect::from_center_size(area.center(), s * k);
-            bp.image(
-                tex.id(),
-                img,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            egui::Image::new(tex)
+                .corner_radius(8)
+                .paint_at(ui, egui::Rect::from_center_size(area.center(), s * k));
         };
-        let one_line = |text: String, font: FontId, color: Color32, w: f32| {
-            let mut job = LayoutJob::simple(text, font, color, w);
-            job.wrap.max_rows = 1;
-            job.wrap.break_anywhere = true;
+        let wrapped = |text: String, size: f32, color: Color32, w: f32, rows: usize| {
+            let mut job = LayoutJob::simple(text, FontId::proportional(size), color, w);
+            job.wrap.max_rows = rows;
+            job.wrap.break_anywhere = rows == 1;
             ui.painter().layout_job(job)
         };
-        let mut footer = format!("{} · {}", human_size(e.bytes), e.source_app);
-        match e.kind {
+        let meta = match e.kind {
             Kind::Text => {
                 let t: String = e.text.chars().take(400).collect();
                 let t = if t.trim().is_empty() {
@@ -438,34 +638,26 @@ impl App {
                 } else {
                     t.trim().to_owned()
                 };
-                let g = ui.painter().layout(
-                    t,
-                    FontId::proportional(13.0),
-                    v.text_color(),
-                    body.width(),
+                let rows = ((body.height() / 18.0) as usize).max(1);
+                bp.galley(
+                    body.min,
+                    wrapped(t, 13.5, theme::TEXT, body.width(), rows),
+                    theme::TEXT,
                 );
-                bp.galley(body.min, g, v.text_color());
-                footer = format!("{} chars · {}", e.text.chars().count(), e.source_app);
+                format!("{} chars", e.text.chars().count())
             }
             Kind::Image => {
                 self.want_thumb(e.id);
                 match self.thumb(e.id) {
-                    Some(t) => draw_thumb(&bp, &t, body),
+                    Some(t) => draw_thumb(ui, &t, body),
                     None => {
-                        bp.text(
-                            body.center(),
-                            Align2::CENTER_CENTER,
-                            "…",
-                            FontId::proportional(20.0),
-                            dim,
-                        );
+                        bp.rect_filled(body, 8, theme::SURFACE_HI);
                     }
                 }
-                footer = format!(
-                    "{} · {}",
-                    e.title.strip_prefix("Image · ").unwrap_or(&e.title),
-                    human_size(e.bytes)
-                );
+                e.title
+                    .strip_prefix("Image · ")
+                    .unwrap_or(&e.title)
+                    .to_owned()
             }
             Kind::Files => {
                 let (name, ext, count) = file_parts(&e.title);
@@ -474,76 +666,79 @@ impl App {
                     self.want_thumb(e.id);
                 }
                 let tex = if has_img { self.thumb(e.id) } else { None };
-                let label = if ext.is_empty() {
-                    "FILE".to_owned()
-                } else {
-                    ext.to_uppercase().chars().take(5).collect()
-                };
-                let mut text_area = body;
                 if let Some(t) = tex {
                     draw_thumb(
-                        &bp,
+                        ui,
                         &t,
                         egui::Rect::from_min_max(
                             body.min,
-                            egui::pos2(body.max.x, body.max.y - 18.0),
+                            egui::pos2(body.max.x, body.max.y - 22.0),
                         ),
                     );
-                    text_area.min.y = body.max.y - 16.0;
-                    let g = one_line(
-                        name,
-                        FontId::proportional(12.0),
-                        v.text_color(),
-                        body.width(),
+                    bp.galley(
+                        egui::pos2(body.min.x, body.max.y - 17.0),
+                        wrapped(name, 12.5, theme::TEXT, body.width(), 1),
+                        theme::TEXT,
                     );
-                    bp.galley(text_area.min, g, v.text_color());
                 } else {
-                    let badge = egui::Rect::from_min_size(body.min, vec2(48.0, 60.0));
-                    bp.rect_filled(badge, 6, badge_color(&ext));
+                    let label: String = if ext.is_empty() {
+                        "FILE".to_owned()
+                    } else {
+                        ext.to_uppercase().chars().take(4).collect()
+                    };
+                    let badge = egui::Rect::from_min_size(body.min, vec2(40.0, 48.0));
+                    bp.rect_filled(badge, 8, badge_color(&ext).gamma_multiply(0.25));
                     bp.text(
                         badge.center(),
                         Align2::CENTER_CENTER,
                         label,
-                        FontId::proportional(13.0),
-                        Color32::WHITE,
+                        FontId::proportional(11.5),
+                        badge_color(&ext),
                     );
-                    let w = body.width() - 56.0;
-                    let mut job =
-                        LayoutJob::simple(name, FontId::proportional(13.0), v.text_color(), w);
-                    job.wrap.max_rows = 3;
-                    job.wrap.break_anywhere = true;
-                    let g = ui.painter().layout_job(job);
-                    bp.galley(body.min + vec2(56.0, 0.0), g, v.text_color());
+                    bp.galley(
+                        body.min + vec2(0.0, 58.0),
+                        wrapped(name, 13.5, theme::TEXT, body.width(), 3),
+                        theme::TEXT,
+                    );
                 }
-                footer = if count > 1 {
-                    format!("+{} more · {}", count - 1, human_size(e.bytes))
+                if count > 1 {
+                    format!("{count} files · {}", human_size(e.bytes))
                 } else {
-                    format!(
-                        "{} · {}",
-                        if ext.is_empty() { "file" } else { &ext },
-                        human_size(e.bytes)
-                    )
-                };
+                    human_size(e.bytes)
+                }
             }
-        }
-        let dot = match e.index_status.as_str() {
-            "ready" => Color32::from_rgb(80, 190, 110),
-            "pending" => Color32::from_rgb(220, 170, 60),
-            _ => Color32::from_rgb(210, 80, 80),
         };
-        p.circle_filled(egui::pos2(rect.min.x + 14.0, rect.max.y - 13.0), 3.5, dot);
-        let g = one_line(
-            format!("{footer} · {}", age(crate::model::now() - e.last_seen)),
-            FontId::proportional(10.5),
-            dim,
-            rect.width() - 34.0,
+        // Footer: quiet metadata, plus an error dot only when indexing actually failed.
+        let failed = !matches!(e.index_status.as_str(), "ready" | "pending" | "extracting");
+        let mut fx = rect.min.x + 12.0;
+        if failed {
+            p.circle_filled(egui::pos2(fx + 3.0, rect.max.y - 15.0), 3.0, theme::DANGER);
+            fx += 12.0;
+        }
+        let g = wrapped(
+            format!("{} · {meta}", age(crate::model::now() - e.last_seen)),
+            11.0,
+            theme::MUTED,
+            rect.max.x - fx - 12.0,
+            1,
         );
-        p.galley(egui::pos2(rect.min.x + 24.0, rect.max.y - 20.0), g, dim);
+        p.galley(egui::pos2(fx, rect.max.y - 22.0), g, theme::MUTED);
+        if e.pinned {
+            p.text(
+                rect.right_bottom() + vec2(-14.0, -15.0),
+                Align2::CENTER_CENTER,
+                "★",
+                FontId::proportional(12.0),
+                theme::ACCENT,
+            );
+        }
+        // Pin/delete float in on hover.
+        let at = ctx.animate_bool_with_time(r.id.with("acts"), hov, 0.12);
         let (pin, del) = (
-            egui::Rect::from_min_size(rect.right_top() + vec2(-48.0, 3.0), vec2(22.0, 20.0)),
-            egui::Rect::from_min_size(rect.right_top() + vec2(-25.0, 3.0), vec2(22.0, 20.0)),
+            egui::Rect::from_center_size(rect.right_top() + vec2(-44.0, 16.0), vec2(22.0, 22.0)),
+            egui::Rect::from_center_size(rect.right_top() + vec2(-18.0, 16.0), vec2(22.0, 22.0)),
         );
-        if hov || sel {
+        if at > 0.01 {
             for (rc, glyph, tip, id) in [
                 (
                     pin,
@@ -551,19 +746,30 @@ impl App {
                     if e.pinned { "Unpin" } else { "Pin" },
                     "pin",
                 ),
-                (del, "✖", "Delete", "del"),
+                (del, "", "Delete", "del"),
             ] {
                 let b = ui.interact(rc, ui.id().with((id, e.id)), Sense::click());
-                if b.hovered() {
-                    p.rect_filled(rc, 4, v.widgets.hovered.bg_fill);
-                }
-                p.text(
+                let fill = if b.hovered() {
+                    theme::LINE
+                } else {
+                    theme::BG.gamma_multiply(0.85)
+                };
+                p.circle_filled(
                     rc.center(),
-                    Align2::CENTER_CENTER,
-                    glyph,
-                    FontId::proportional(13.0),
-                    v.text_color(),
+                    11.0 * (0.7 + 0.3 * at),
+                    fill.gamma_multiply(at),
                 );
+                if id == "del" {
+                    cross(&p, rc.center(), 3.5, theme::TEXT.gamma_multiply(at));
+                } else {
+                    p.text(
+                        rc.center(),
+                        Align2::CENTER_CENTER,
+                        glyph,
+                        FontId::proportional(11.5),
+                        theme::TEXT.gamma_multiply(at),
+                    );
+                }
                 if b.on_hover_text(tip).clicked() {
                     acts.push(if id == "pin" {
                         Act::Pin(e.id, !e.pinned)
@@ -600,6 +806,167 @@ impl App {
                 }
             }
         });
+    }
+    /// A round search button that springs open into a text field, plus a mode chip once open.
+    fn search_bar(&mut self, ui: &mut egui::Ui) {
+        use egui::{Rect, Sense, Stroke, vec2};
+        let ctx = ui.ctx().clone();
+        let id = egui::Id::new("search-pill");
+        let open = self.search_open || !self.query.is_empty();
+        let (secs, ease): (f32, fn(f32) -> f32) = if open {
+            (0.42, egui::emath::easing::back_out)
+        } else {
+            (0.2, egui::emath::easing::cubic_out)
+        };
+        let t = ctx.animate_bool_with_time_and_easing(id, open, secs, ease);
+        let tc = t.clamp(0.0, 1.0);
+        let full = (ui.available_width() * 0.4).clamp(220.0, 420.0);
+        let w = (PILL + (full - PILL) * t).max(PILL);
+        let (rect, r) = ui.allocate_exact_size(vec2(w, PILL), Sense::click());
+        let focused = ctx.memory(|m| m.has_focus(search_id()));
+        let h = ctx.animate_bool_with_time(id.with("h"), r.hovered() || focused, 0.12);
+        // A slight vertical squash while the width is still moving gives the open a bubbly feel.
+        let squash = if t > 0.0 && t < 1.0 {
+            (t * std::f32::consts::PI).sin() * 2.5
+        } else {
+            0.0
+        };
+        let pill = rect.shrink2(vec2(0.0, squash));
+        let p = ui.painter().clone();
+        p.rect_filled(
+            pill,
+            (PILL / 2.0) as u8,
+            theme::SURFACE.lerp_to_gamma(theme::SURFACE_HI, h * (1.0 - tc * 0.5)),
+        );
+        let edge = if focused {
+            theme::LINE.lerp_to_gamma(theme::ACCENT, tc)
+        } else {
+            theme::LINE
+        };
+        p.rect_stroke(
+            pill,
+            (PILL / 2.0) as u8,
+            Stroke::new(1.0_f32, edge),
+            egui::StrokeKind::Inside,
+        );
+        magnifier(
+            &p,
+            egui::pos2(rect.min.x + PILL / 2.0, rect.center().y),
+            theme::MUTED.lerp_to_gamma(theme::TEXT, h.max(tc)),
+        );
+        if r.clicked() && !open {
+            self.search_open = true;
+            self.focus_search = true;
+        }
+        r.on_hover_text_at_pointer("Search (or just start typing)");
+        let mut area = rect;
+        if tc > 0.25 {
+            let has_text = !self.query.is_empty();
+            let text_rect = Rect::from_min_max(
+                rect.min + vec2(PILL - 4.0, 0.0),
+                rect.max - vec2(if has_text { 30.0 } else { 12.0 }, 0.0),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(text_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            child.multiply_opacity(((tc - 0.25) / 0.75).min(1.0));
+            let resp = child.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .id(search_id())
+                    .frame(false)
+                    .hint_text("Search clipboard")
+                    .font(egui::FontId::proportional(14.0))
+                    .text_color(theme::TEXT)
+                    .desired_width(text_rect.width()),
+            );
+            if self.focus_search {
+                resp.request_focus();
+                self.focus_search = false;
+            }
+            if resp.changed() {
+                self.refresh();
+            }
+            if has_text {
+                let x = Rect::from_center_size(
+                    egui::pos2(rect.max.x - 17.0, rect.center().y),
+                    vec2(20.0, 20.0),
+                );
+                let xr = ui.interact(x, id.with("clear"), Sense::click());
+                if xr.hovered() {
+                    p.circle_filled(x.center(), 10.0, theme::LINE);
+                }
+                cross(
+                    &p,
+                    x.center(),
+                    3.5,
+                    theme::MUTED.lerp_to_gamma(theme::TEXT, tc),
+                );
+                if xr.clicked() {
+                    self.query.clear();
+                    self.search_open = false;
+                    ctx.memory_mut(|m| m.surrender_focus(search_id()));
+                    self.refresh();
+                }
+            }
+        }
+        // Search mode lives behind one quiet chip that only shows while searching.
+        if tc > 0.5 {
+            let cloud = self.engine.config.read().unwrap().cloud_enabled;
+            let label = match self.mode {
+                SearchMode::Keyword => "Keyword",
+                SearchMode::Hybrid => "Hybrid",
+                SearchMode::Semantic => "Semantic",
+            };
+            let chip = ui
+                .scope(|ui| {
+                    ui.multiply_opacity(((tc - 0.5) * 2.0).min(1.0));
+                    ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(label).size(12.5).color(theme::MUTED),
+                        )
+                        .fill(theme::SURFACE)
+                        .stroke(Stroke::new(1.0_f32, theme::LINE))
+                        .corner_radius(14)
+                        .min_size(vec2(0.0, 28.0)),
+                    )
+                })
+                .inner;
+            area = area.union(chip.rect);
+            self.mode_menu = egui::Popup::menu(&chip).show(|ui| {
+                for (mode, name, tip) in [
+                    (SearchMode::Keyword, "Keyword", "Exact words in text and file contents"),
+                    (SearchMode::Hybrid, "Hybrid", "Keywords first, then meaning-based matches"),
+                    (SearchMode::Semantic, "Semantic", "Meaning-based matches from your embeddings"),
+                ] {
+                    if ui.selectable_value(&mut self.mode, mode, name).on_hover_text(tip).clicked() {
+                        self.refresh();
+                        self.focus_search = true;
+                        ui.close();
+                    }
+                }
+                if !cloud {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Cloud processing is off, so semantic\nsearch falls back to keywords.").small().color(theme::MUTED));
+                } else if !self.semantic && !self.query.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Semantic results follow when ready.").small().color(theme::MUTED));
+                }
+            }).is_some();
+        } else {
+            self.mode_menu = false;
+        }
+        // Fold back into a button once the field is empty, unfocused and the pointer has moved on.
+        if self.search_open
+            && self.query.is_empty()
+            && !focused
+            && !self.focus_search
+            && !self.mode_menu
+            && !ui.rect_contains_pointer(area.expand(6.0))
+        {
+            self.search_open = false;
+        }
     }
     fn settings(&mut self, ctx: &egui::Context) {
         let mut open = self.settings;
@@ -697,12 +1064,47 @@ impl eframe::App for App {
         }
         let n = self.hits.len();
         if !self.settings {
+            let editing = ctx.memory(|m| m.has_focus(search_id()));
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 if !self.query.is_empty() {
                     self.query.clear();
                     self.refresh();
+                } else if self.search_open {
+                    self.search_open = false;
+                    ctx.memory_mut(|m| m.surrender_focus(search_id()));
                 } else if self.hotkey_id.is_some() {
                     self.hide(ctx);
+                }
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+                self.search_open = true;
+                self.focus_search = true;
+            }
+            // Typing anywhere opens search with what was typed.
+            if !editing {
+                let typed: String = ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(|e| match e {
+                            egui::Event::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect()
+                });
+                if !typed.trim().is_empty() {
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(_))));
+                    self.query.push_str(&typed);
+                    let mut state =
+                        egui::TextEdit::load_state(ctx, search_id()).unwrap_or_default();
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(self.query.chars().count()),
+                        )));
+                    state.store(ctx, search_id());
+                    self.search_open = true;
+                    self.focus_search = true;
+                    self.refresh();
                 }
             }
             let key =
@@ -744,37 +1146,33 @@ impl eframe::App for App {
                 self.restore(ctx, paste);
             }
         }
-        let accent = ctx.style().visuals.selection.bg_fill;
         let frame = egui::Frame::new()
-            .fill(ctx.style().visuals.panel_fill)
-            .inner_margin(egui::Margin::symmetric(14, 8))
-            .stroke(egui::Stroke::new(2.0_f32, accent));
+            .fill(theme::BG)
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE));
         let mut acts = Vec::new();
+        if self.status != self.status_seen {
+            self.status_seen = self.status.clone();
+            self.status_at = Instant::now();
+        }
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let response = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search clipboard…").desired_width((ui.available_width() * 0.4).clamp(180.0, 520.0)));
-                if self.focus_search {
-                    response.request_focus();
-                    self.focus_search = false;
-                }
-                if response.changed() {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                self.search_bar(ui);
+                let mut filter = self.filter;
+                if segmented(ui, egui::Id::new("kind-filter"), &["All", "Text", "Images", "Files"], &mut filter) {
+                    self.filter = filter;
                     self.refresh();
                 }
-                let cloud = self.engine.config.read().unwrap().cloud_enabled;
-                let tip = if !cloud { "Cloud processing is off: semantic search falls back to keywords" } else if self.semantic { "Semantic index ready" } else { "Keyword results shown; semantic results follow when ready" };
-                for (mode, label) in [(SearchMode::Keyword, "Keyword"), (SearchMode::Hybrid, "Hybrid"), (SearchMode::Semantic, "Semantic")] {
-                    if ui.selectable_value(&mut self.mode, mode, label).on_hover_text(tip).changed() {
-                        self.refresh();
-                    }
-                }
-                ui.separator();
-                for (i, label) in ["All", "Text", "Images", "Files"].into_iter().enumerate() {
-                    if ui.selectable_value(&mut self.filter, i, label).changed() {
-                        self.refresh();
-                    }
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("⚙", |ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let gear = icon_button(ui, |p, r, c| {
+                        p.text(r.center(), egui::Align2::CENTER_CENTER, "⚙", egui::FontId::proportional(15.0), c);
+                    });
+                    egui::Popup::menu(&gear).show(|ui| {
+                        ui.set_min_width(190.0);
+                        ui.label(egui::RichText::new(format!("{} items · {} indexed", self.counts.0, self.counts.1)).small().color(theme::MUTED));
+                        ui.separator();
                         if ui.button("Settings").clicked() {
                             self.draft = self.engine.config.read().unwrap().clone();
                             self.exclusions = self.draft.excluded_apps.join("\n");
@@ -792,23 +1190,41 @@ impl eframe::App for App {
                             self.quitting = true;
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
+                        ui.separator();
+                        ui.label(egui::RichText::new("Type to search · arrow keys select\nEnter paste · right-click for more · Esc hide").small().color(theme::MUTED));
                     });
-                    ui.small(format!("{} items · {} indexed", self.counts.0, self.counts.1));
+                    // Status messages appear briefly, then shrink to a dot that keeps them on hover.
+                    if !self.status.is_empty() {
+                        let fade = 1.0 - ((self.status_at.elapsed().as_secs_f32() - 5.0) / 0.4).clamp(0.0, 1.0);
+                        if fade > 0.0 {
+                            ui.scope(|ui| {
+                                ui.set_max_width((ui.available_width() - 40.0).clamp(0.0, 420.0));
+                                ui.add(egui::Label::new(egui::RichText::new(&self.status).small().color(theme::MUTED.gamma_multiply(fade))).truncate());
+                            });
+                            ctx.request_repaint_after(Duration::from_millis(50));
+                        } else {
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(r.center(), 3.5, theme::WARN);
+                            resp.on_hover_text(&self.status);
+                        }
+                    }
                 });
             });
-            let card_h = (ui.available_height() - 24.0).max(80.0);
+            ui.add_space(4.0);
+            let card_h = (ui.available_height() - 4.0).max(80.0);
             if n == 0 {
-                ui.add_space(card_h / 3.0);
+                ui.add_space(card_h / 2.0 - 12.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(if self.query.is_empty() { "Copy text, an image, or files to get started. Check capture permissions in Settings (⚙)." } else { "No matching items." });
+                    ui.label(egui::RichText::new(if self.query.is_empty() { "Nothing here yet. Copy text, an image, or a file." } else { "No matches." }).color(theme::MUTED));
                 });
             }
             let hits = std::mem::take(&mut self.hits);
             let (step, sel, scroll) = (CARD_W + GAP, self.selected, std::mem::take(&mut self.scroll_to_selected));
             if n > 0 {
-                egui::ScrollArea::horizontal().id_salt("strip").auto_shrink([false, true]).max_height(card_h).show_viewport(ui, |ui, vp| {
-                    let (area, _) = ui.allocate_exact_size(egui::vec2((n as f32 * step - GAP).max(1.0), card_h - 14.0), egui::Sense::hover());
-                    let card_rect = |i: usize| egui::Rect::from_min_size(area.min + egui::vec2(i as f32 * step, 0.0), egui::vec2(CARD_W, area.height()));
+                egui::ScrollArea::horizontal().id_salt("strip").auto_shrink([false, true]).max_height(card_h).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded).show_viewport(ui, |ui, vp| {
+                    // Top padding leaves room for the hover lift and selection glow.
+                    let (area, _) = ui.allocate_exact_size(egui::vec2((n as f32 * step - GAP).max(1.0) + 8.0, card_h - 12.0), egui::Sense::hover());
+                    let card_rect = |i: usize| egui::Rect::from_min_size(area.min + egui::vec2(4.0 + i as f32 * step, 6.0), egui::vec2(CARD_W, area.height() - 10.0));
                     let range = visible_range(vp.min.x, vp.max.x, step, n);
                     for (i, hit) in hits.iter().enumerate().skip(range.start).take(range.len()) {
                         self.card(ui, card_rect(i), i, hit, &mut acts);
@@ -819,7 +1235,6 @@ impl eframe::App for App {
                 });
             }
             self.hits = hits;
-            ui.small(if self.status.is_empty() { "←/→ select · Enter paste · Esc hide · right-click for more".to_owned() } else { self.status.clone() });
         });
         for act in acts {
             match act {

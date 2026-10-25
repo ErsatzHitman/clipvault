@@ -16,7 +16,7 @@ All disk operations, clipboard reads, decoding, and HTTP calls run outside the U
 
 ## UI
 
-The window is a single bottom-docked panel (`ui.rs`): search box, mode and type chips, and a virtualized horizontal strip of 200-point cards. `platform::dock_rect` places it from the work area (Windows `rcWork` via `MonitorFromPoint`, Linux `_NET_WORKAREA`, macOS osascript; Wayland falls back to monitor size minus 48 points). It re-docks for a few frames after each show so a monitor with a different DPI settles. Linux `_NET_WORKAREA` spans all monitors, so multi-monitor placement may be off. Settings temporarily enlarge the dock to 80% of the work-area height.
+The window is a single bottom-docked panel (`ui.rs`): an expanding search pill with a mode chip, a segmented type filter, a gear menu, and a virtualized horizontal strip of 200-point cards. `platform::dock_rect` places it from the work area (Windows `rcWork` via `MonitorFromPoint`, Linux `_NET_WORKAREA`, macOS osascript; Wayland falls back to monitor size minus 48 points). It re-docks for a few frames after each show so a monitor with a different DPI settles. Linux `_NET_WORKAREA` spans all monitors, so multi-monitor placement may be off. Settings temporarily enlarge the dock to 80% of the work-area height.
 
 ## Cloud disclosure
 
